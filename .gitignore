@@ -21,6 +21,7 @@ artifacts/
 ## IDE
 .idea/
 .vscode/
+.claude/settings.local.json
 
 ## Python（py360convert 参考帧生成）
 __pycache__/
@@ -30,3 +31,13 @@ __pycache__/
 ## 测试参考帧与 fixture 二进制（由 tests/reference/generate_reference.py 生成，不入库）
 tests/fixtures/*.bin
 tests/reference/*.bin
+
+## C++ 探针构建产物（src/PanoToVideo.Native/probe）
+src/PanoToVideo.Native/probe/*.exe
+src/PanoToVideo.Native/probe/*.obj
+src/PanoToVideo.Native/probe/*.pdb
+src/PanoToVideo.Native/probe/*.ilk
+src/PanoToVideo.Native/probe/*.log
+src/PanoToVideo.Native/probe/*.txt
+src/PanoToVideo.Native/probe/CMakeFiles/
+src/PanoToVideo.Native/probe/CMakeCache.txt
