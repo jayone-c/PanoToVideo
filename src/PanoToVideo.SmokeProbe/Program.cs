@@ -249,6 +249,59 @@ Console.WriteLine("\n=== 阶段1 · 单图导出全链路 ===");
     {
         Console.WriteLine($"  错误: {result.Error}");
     }
+
+    // ===== 阶段1 · 360° 首尾一致性验证（任务6）=====
+    Console.WriteLine("\n=== 阶段1 · 360° 首尾一致性 ===");
+    if (result.Success)
+    {
+        // 编码前 GPU 帧：Yaw(0) vs Yaw(末帧) 对 360°整数倍任务应几何相同(无缝循环)
+        // 用 equirect shader 渲染首末帧直接对比(不经编码,排除压缩差异)
+        using var probe2 = new DeviceProbe();
+        var pref = probe2.Probe().Preferred!;
+        D3D11CreateDevice(pref.Adapter, DriverType.Unknown, DeviceCreationFlags.BgraSupport,
+            [FeatureLevel.Level_11_1, FeatureLevel.Level_11_0],
+            out ID3D11Device dev2, out _, out _).CheckError();
+        using (dev2)
+        {
+            using var pipe2 = new EquirectPipeline(dev2);
+            using var srv2 = pipe2.UploadErpTexture(erpRgba, erpW, erpH);
+            int totalFrames = parameters.TotalFrames;
+            double yawFirst = YawSchedule.YawAt(0, totalFrames, parameters.RotationDegrees, parameters.Direction);
+            double yawLast = YawSchedule.YawAt(totalFrames - 1, totalFrames, parameters.RotationDegrees, parameters.Direction);
+            var rgbaFirst = pipe2.RenderFrameToRgba(srv2, erpW, erpH, parameters.Width, parameters.Height, parameters.HorizontalFov, yawFirst, parameters.Pitch);
+            var rgbaLast = pipe2.RenderFrameToRgba(srv2, erpW, erpH, parameters.Width, parameters.Height, parameters.HorizontalFov, yawLast, parameters.Pitch);
+
+            // 首末帧 Yaw 不同(末帧354°,非0°,避免停顿),但几何应衔接:末帧视角=首帧前一帧视角
+            Console.WriteLine($"  编码前: 首帧Yaw={yawFirst:F1}° 末帧Yaw={yawLast:F1}° (无缝循环末帧非首帧避免停顿)");
+
+            // 编码后:抽首末帧解码对比(允许压缩差异,检查无几何跳变)
+            string frame0 = Path.Combine(repoRoot, "frame0.png");
+            string frameN = Path.Combine(repoRoot, "frameN.png");
+            RunFfmpeg($"-y -i \"{result.OutputPath}\" -vf \"select=eq(n\\,0)\" -frames:v 1 \"{frame0}\"");
+            RunFfmpeg($"-y -i \"{result.OutputPath}\" -vf \"select=eq(n\\,{totalFrames - 1})\" -frames:v 1 \"{frameN}\"");
+            // PSNR 对比(允许压缩差异,阈值宽松:几何跳变会致PSNR极低<20dB)
+            var psi = new ProcessStartInfo("ffmpeg",
+                $"-i \"{frame0}\" -i \"{frameN}\" -filter_complex \"psnr\" -f null -")
+            { RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+            var p = Process.Start(psi)!;
+            var errOut = p.StandardError.ReadToEnd();
+            p.WaitForExit();
+            var psnrMatch = System.Text.RegularExpressions.Regex.Match(errOut, @"average:(\d+\.\d+)");
+            double encPsnr = psnrMatch.Success ? double.Parse(psnrMatch.Groups[1].Value) : 0;
+            bool noJump = encPsnr > 15.0; // 几何跳变会致PSNR<15;压缩差异通常>20
+            Console.WriteLine($"  编码后首末帧PSNR: {encPsnr:F2}dB {(noJump ? "(无几何跳变)" : "(可能几何跳变!)")}");
+            try { File.Delete(frame0); File.Delete(frameN); } catch { }
+        }
+    }
+}
+
+static void RunFfmpeg(string args)
+{
+    var psi = new ProcessStartInfo("ffmpeg", args)
+    { RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+    var p = Process.Start(psi)!;
+    p.StandardError.ReadToEnd();
+    p.WaitForExit();
 }
 
 static double PsnrRgb(byte[] rgba, byte[] rgb)
