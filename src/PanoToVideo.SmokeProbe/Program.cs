@@ -31,6 +31,14 @@ D3D11CreateDevice(selected.Adapter.QueryInterface<IDXGIAdapter>(), DriverType.Un
     out ID3D11Device device, out FeatureLevel featureLevel, out ID3D11DeviceContext context).CheckError();
 Console.WriteLine($"D3D11 设备创建成功，FeatureLevel={featureLevel}");
 
+// ADR Q1 验证：MFCreateDXGIDeviceManager 能否挂 D3D11 设备（零拷贝编码前提）
+var mfMount = MfDeviceProbe.ProbeDeviceMount(device);
+Console.WriteLine($"\n[ADR Q1] MF 设备挂载: {(mfMount.CanMountDevice ? "成功" : "失败")}  Token={mfMount.ResetToken}  {mfMount.Error ?? ""}");
+
+// ADR Q1 设备探测：枚举 H.264 硬件编码器（验证 NVENC 可用）
+var encoderCount = MfDeviceProbe.EnumerateH264HardwareEncoders();
+Console.WriteLine($"[ADR Q1] H.264 硬件编码器数量: {encoderCount}");
+
 using (selected.Adapter)
 using (device)
 using (context)
