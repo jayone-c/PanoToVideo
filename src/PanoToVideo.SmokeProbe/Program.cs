@@ -1,9 +1,13 @@
 using PanoToVideo.Core.Projection;
 using PanoToVideo.Render.D3D11;
 using PanoToVideo.Render.DeviceProbe;
+using PanoToVideo.Render.Encoding;
+using System.Runtime.InteropServices;
 using Vortice.Direct3D;
 using Vortice.Direct3D11;
 using Vortice.DXGI;
+using Vortice.Mathematics;
+using Format = Vortice.DXGI.Format;
 using static Vortice.Direct3D11.D3D11;
 
 // ===== 阶段0 探针 · GPU shader 几何验证 =====
@@ -76,6 +80,72 @@ using (context)
         Console.WriteLine($"  {names[i]}: Y={Y}(期{exp[i][0]}) Cb={Cb}(期{exp[i][1]}) Cr={Cr}(期{exp[i][2]}) {(ok ? "OK" : "FAIL")}");
     }
     Console.WriteLine($"[ADR Q3] 颜色转换: {(q3Pass ? "通过" : "失败")}");
+
+    // ADR Q2 前提验证：NV12 平面纹理 RTV（Y R8 + UV R8G8 plane）+ MFCreateDXGISurfaceBuffer 零拷贝 buffer
+    Console.WriteLine("\n[ADR Q2] NV12 平面纹理 RTV + 零拷贝 buffer:");
+    var nv12Desc = new Texture2DDescription
+    {
+        Width = 8, Height = 4, MipLevels = 1, ArraySize = 1,
+        Format = Format.NV12, SampleDescription = new SampleDescription(1, 0),
+        Usage = ResourceUsage.Default, BindFlags = BindFlags.RenderTarget,
+    };
+    using var nv12Tex = device.CreateTexture2D(nv12Desc);
+    using var yRtv2 = device.CreateRenderTargetView(nv12Tex, new RenderTargetViewDescription
+    {
+        Format = Format.R8_UNorm, ViewDimension = RenderTargetViewDimension.Texture2D,
+        Texture2D = new Texture2DRenderTargetView { MipSlice = 0 },
+    });
+    using var uvRtv2 = device.CreateRenderTargetView(nv12Tex, new RenderTargetViewDescription
+    {
+        Format = Format.R8G8_UNorm, ViewDimension = RenderTargetViewDimension.Texture2D,
+        Texture2D = new Texture2DRenderTargetView { MipSlice = 0 },
+    });
+    context.ClearRenderTargetView(yRtv2, new Color4(235f / 255f, 0, 0, 1));
+    context.ClearRenderTargetView(uvRtv2, new Color4(128f / 255f, 128f / 255f, 0, 1));
+    var nv12StagingDesc = nv12Desc;
+    nv12StagingDesc.Usage = ResourceUsage.Staging;
+    nv12StagingDesc.BindFlags = BindFlags.None;
+    nv12StagingDesc.CPUAccessFlags = CpuAccessFlags.Read;
+    using var nv12Staging = device.CreateTexture2D(nv12StagingDesc);
+    context.CopyResource(nv12Staging, nv12Tex);
+    var m2 = context.Map(nv12Staging, 0, MapMode.Read);
+    try
+    {
+        int yPitch = (int)m2.RowPitch;
+        int yVal = Marshal.ReadByte(m2.DataPointer, 0);
+        int uvCb = Marshal.ReadByte(m2.DataPointer, 4 * yPitch);
+        int uvCr = Marshal.ReadByte(m2.DataPointer, 4 * yPitch + 1);
+        bool nv12Ok = yVal == 235 && uvCb == 128 && uvCr == 128;
+        Console.WriteLine($"  NV12平面RTV: Y[0]={yVal}(期235) UV.Cb={uvCb}(期128) UV.Cr={uvCr}(期128) {(nv12Ok ? "OK" : "FAIL")}");
+    }
+    finally { context.Unmap(nv12Staging, 0); }
+    var sbuf = MfDeviceProbe.ProbeSurfaceBuffer(nv12Tex);
+    Console.WriteLine($"  MFCreateDXGISurfaceBuffer零拷贝: {(sbuf.Success ? "成功" : "失败")} {sbuf.Error ?? ""}");
+
+    // ADR Q2 端到端：渲染多帧 -> NV12 -> 零拷贝编码 MP4
+    Console.WriteLine("\n[ADR Q2] 端到端零拷贝编码:");
+    string mp4Path = Path.Combine(repoRoot, "smoke_output.mp4");
+    if (File.Exists(mp4Path)) File.Delete(mp4Path);
+    const int encW = 320, encH = 320, encFps = 30, encFrames = 30; // 1秒
+    uint encBitrate = 4_000_000;
+    try
+    {
+        using var encoder = new MfH264Encoder(device, mp4Path, encW, encH, encFps, encBitrate);
+        for (int i = 0; i < encFrames; i++)
+        {
+            double yaw = 360.0 * i / encFrames;
+            using var nv12Frame = pipeline.RenderFrameToNv12(srv, erpW, erpH, encW, encH, 75, yaw, 0);
+            encoder.SubmitFrame(nv12Frame, i);
+        }
+        encoder.Finalize();
+        var fi = new FileInfo(mp4Path);
+        Console.WriteLine($"  编码完成: {encFrames}帧 -> {mp4Path} ({fi.Length} 字节)");
+        Console.WriteLine($"  Q2端到端: {(fi.Length > 0 ? "成功" : "失败(空文件)")}");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"  Q2端到端失败: {ex.GetType().Name}: {ex.Message}");
+    }
 
     // 4. 多视角渲染并与 py360convert + Core 双重对照
     const int ow = 320, oh = 320;

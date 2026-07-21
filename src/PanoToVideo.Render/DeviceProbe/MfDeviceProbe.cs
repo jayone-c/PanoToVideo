@@ -73,5 +73,28 @@ public static class MfDeviceProbe
             MediaFactory.MFShutdown();
         }
     }
+
+    /// <summary>
+    /// 验证 MFCreateDXGISurfaceBuffer 能否零拷贝包裹 D3D11 纹理（ADR Q2）。
+    /// 这是零拷贝编码（GPU 纹理直接喂 MF 编码器不经 CPU 回读）的核心。
+    /// </summary>
+    public static (bool Success, string? Error) ProbeSurfaceBuffer(ID3D11Texture2D texture)
+    {
+        MediaFactory.MFStartup(useLightVersion: true);
+        try
+        {
+            // riid = ID3D11Texture2D 接口 ID；subresourceIndex=0；bottomUpWhenLinear=false
+            var buffer = MediaFactory.MFCreateDXGISurfaceBuffer(typeof(ID3D11Texture2D).GUID, texture, 0, false);
+            return (buffer != null, null);
+        }
+        catch (Exception ex)
+        {
+            return (false, $"{ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            MediaFactory.MFShutdown();
+        }
+    }
 }
 

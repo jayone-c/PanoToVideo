@@ -17,6 +17,7 @@ artifacts/
 ## 应用运行时临时输出
 *.tmp.mp4
 **/exports/
+smoke_output.mp4
 
 ## IDE
 .idea/

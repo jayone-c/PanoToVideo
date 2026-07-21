@@ -210,6 +210,90 @@ public sealed class EquirectPipeline : IDisposable
         }
     }
 
+    /// <summary>
+    /// 渲染单帧并零拷贝转换为 NV12 平面纹理（ADR Q2/Q3 完整链路）。
+    /// equirect shader 渲染 BGRA -> colorconvert shader 转 NV12（Y plane + UV plane）。
+    /// 返回的 NV12 纹理可直接喂 MfH264Encoder.SubmitFrame 零拷贝编码。
+    /// </summary>
+    public ID3D11Texture2D RenderFrameToNv12(
+        ID3D11ShaderResourceView erpSrv, int erpW, int erpH,
+        int outW, int outH, double hFovDeg, double yawDeg, double pitchDeg)
+    {
+        // 1. equirect 渲染到 BGRA RT
+        var bgraDesc = new Texture2DDescription
+        {
+            Width = (uint)outW, Height = (uint)outH, MipLevels = 1, ArraySize = 1,
+            Format = Format.R8G8B8A8_UNorm, SampleDescription = new SampleDescription(1, 0),
+            Usage = ResourceUsage.Default, BindFlags = BindFlags.RenderTarget | BindFlags.ShaderResource,
+        };
+        using var bgraTex = _device.CreateTexture2D(bgraDesc);
+        using var bgraRtv = _device.CreateRenderTargetView(bgraTex);
+        using var bgraSrv = _device.CreateShaderResourceView(bgraTex);
+
+        var vFovDeg = FovMath.VerticalFov(hFovDeg, outW, outH);
+        var p = new Params
+        {
+            OutW = outW, OutH = outH,
+            TanHalfHFov = (float)Math.Tan(hFovDeg * 0.5 * Math.PI / 180.0),
+            TanHalfVFov = (float)Math.Tan(vFovDeg * 0.5 * Math.PI / 180.0),
+            YawRad = (float)(yawDeg * Math.PI / 180.0),
+            PitchRad = (float)(pitchDeg * Math.PI / 180.0),
+        };
+        _context.UpdateSubresource(ref p, _paramsBuffer);
+
+        _context.ClearRenderTargetView(bgraRtv, new Color4(0, 0, 0, 1));
+        _context.OMSetRenderTargets(bgraRtv, null);
+        _context.RSSetViewport(new Viewport(outW, outH));
+        _context.RSSetState(_rasterizerState);
+        _context.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
+        _context.IASetInputLayout(_inputLayout);
+        _context.IASetVertexBuffer(0, _vertexBuffer, 8);
+        _context.VSSetShader(_vs);
+        _context.PSSetShader(_ps);
+        _context.PSSetShaderResources(0, new[] { erpSrv });
+        _context.PSSetSamplers(0, new[] { _sampler });
+        _context.PSSetConstantBuffers(0, new[] { _paramsBuffer });
+        _context.Draw(3, 0);
+
+        // 2. colorconvert: BGRA -> NV12 平面纹理（Y R8 + UV R8G8 plane）
+        var nv12Desc = new Texture2DDescription
+        {
+            Width = (uint)outW, Height = (uint)outH, MipLevels = 1, ArraySize = 1,
+            Format = Format.NV12, SampleDescription = new SampleDescription(1, 0),
+            Usage = ResourceUsage.Default,
+            BindFlags = BindFlags.RenderTarget | BindFlags.ShaderResource,
+        };
+        var nv12Tex = _device.CreateTexture2D(nv12Desc);
+        using var yRtv = _device.CreateRenderTargetView(nv12Tex, new RenderTargetViewDescription
+        {
+            Format = Format.R8_UNorm, ViewDimension = RenderTargetViewDimension.Texture2D,
+            Texture2D = new Texture2DRenderTargetView { MipSlice = 0 },
+        });
+        using var uvRtv = _device.CreateRenderTargetView(nv12Tex, new RenderTargetViewDescription
+        {
+            Format = Format.R8G8_UNorm, ViewDimension = RenderTargetViewDimension.Texture2D,
+            Texture2D = new Texture2DRenderTargetView { MipSlice = 0 },
+        });
+
+        // colorconvert shader 用同一 cbuffer（OutW/OutH 作为 srcW/srcH 采样 BGRA）
+        _context.UpdateSubresource(ref p, _paramsBuffer);
+        _context.ClearRenderTargetView(yRtv, new Color4(0, 0, 0, 1));
+        _context.ClearRenderTargetView(uvRtv, new Color4(0, 0, 0, 1));
+        _context.OMSetRenderTargets(new[] { yRtv, uvRtv }, null);
+        _context.RSSetViewport(new Viewport(outW, outH));
+        _context.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
+        _context.IASetInputLayout(_inputLayout);
+        _context.IASetVertexBuffer(0, _vertexBuffer, 8);
+        _context.VSSetShader(_ccVs);
+        _context.PSSetShader(_ccPs);
+        _context.PSSetShaderResources(0, new[] { bgraSrv });
+        _context.PSSetSamplers(0, new[] { _sampler });
+        _context.PSSetConstantBuffers(0, new[] { _paramsBuffer });
+        _context.Draw(3, 0);
+
+        return nv12Tex;
+    }
+
     /// <summary>渲染单帧到 R8G8B8A8 RenderTarget 并回读 RGBA 字节（行优先）。</summary>
     public byte[] RenderFrameToRgba(
         ID3D11ShaderResourceView erpSrv, int erpW, int erpH,
