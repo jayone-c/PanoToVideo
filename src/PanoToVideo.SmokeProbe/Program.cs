@@ -1,7 +1,13 @@
+using PanoToVideo.Core.Exporting;
+using PanoToVideo.Core.Parameters;
+using PanoToVideo.Core.Precheck;
 using PanoToVideo.Core.Projection;
+using PanoToVideo.Core.Validation;
 using PanoToVideo.Render.D3D11;
 using PanoToVideo.Render.DeviceProbe;
 using PanoToVideo.Render.Encoding;
+using PanoToVideo.Render.Exporting;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Vortice.Direct3D;
 using Vortice.Direct3D11;
@@ -180,6 +186,69 @@ using (context)
     }
 
     Console.WriteLine($"\n结论: {(allPass ? "GPU shader 几何全部通过 (PSNR ≥ 40dB vs py360convert)" : "存在未通过视角，需排查")}");
+}
+
+// ===== 阶段1 · 单图导出全链路集成验证（任务4）=====
+Console.WriteLine("\n=== 阶段1 · 单图导出全链路 ===");
+{
+    string repoRoot = FindRepoRoot();
+    var erpRgb = File.ReadAllBytes(Path.Combine(repoRoot, "tests", "fixtures", "erp_8192x4096.bin"));
+    const int erpW = 8192, erpH = 4096;
+    var erpRgba = new byte[erpW * erpH * 4];
+    for (int i = 0; i < erpW * erpH; i++)
+    {
+        erpRgba[i * 4] = erpRgb[i * 3];
+        erpRgba[i * 4 + 1] = erpRgb[i * 3 + 1];
+        erpRgba[i * 4 + 2] = erpRgb[i * 3 + 2];
+        erpRgba[i * 4 + 3] = 255;
+    }
+
+    // 单图参数：3秒、360°、60FPS、1080×1920、FOV75、H.264（接近 PRD 基准，缩短时长省时）
+    var parameters = new RenderParameters(
+        DurationSeconds: 3, RotationDegrees: 360, Fps: 60,
+        HorizontalFov: 75.0, Width: 1080, Height: 1920, Pitch: 0.0,
+        Direction: RotationDirection.Clockwise, AsteroidIntro: false);
+    var imageInfo = new ImageInfo(erpW, erpH, false, "scene_equirectangular_8192x4096.bin");
+
+    string outDir = Path.Combine(repoRoot, "smoke_exports");
+    if (Directory.Exists(outDir)) Directory.Delete(outDir, true);
+    Directory.CreateDirectory(outDir);
+
+    long availBytes = new DriveInfo(Path.GetPathRoot(outDir)!).AvailableFreeSpace;
+    var executor = new GpuExportExecutor(erpRgba, erpW, erpH, parameters, ExportPreset.Compatibility);
+    var orchestrator = new SingleImageExportOrchestrator();
+    var sw = Stopwatch.StartNew();
+    var result = orchestrator.Export(imageInfo, parameters, ExportPreset.Compatibility,
+        outDir, availBytes, Directory.GetFiles(outDir), executor);
+    sw.Stop();
+
+    Console.WriteLine($"导出结果: {(result.Success ? "成功" : "失败")}");
+    if (result.Success)
+    {
+        var fi = new FileInfo(result.OutputPath!);
+        Console.WriteLine($"  输出: {result.OutputPath}");
+        Console.WriteLine($"  大小: {fi.Length} 字节");
+        Console.WriteLine($"  耗时: {sw.Elapsed.TotalSeconds:F2}s  平均FPS: {result.Log!.AverageFps:F1}");
+        var dev = executor.GetDeviceInfo();
+        Console.WriteLine($"  设备: {dev?.Device}  编码器: {dev?.Encoder}");
+
+        // ffprobe 校验（PRD 验收：H.264、1080×1920、60FPS、3秒、无音频）
+        var psi = new ProcessStartInfo("ffprobe",
+            $"-v error -show_entries stream=codec_name,codec_type,width,height,r_frame_rate,duration,nb_frames -of default=noprint_wrappers=1 \"{result.OutputPath}\"")
+        { RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
+        var ffout = Process.Start(psi)!;
+        var ffprobeOut = ffout.StandardOutput.ReadToEnd();
+        ffout.WaitForExit();
+        Console.WriteLine($"  ffprobe:\n{string.Join("\n", ffprobeOut.Trim().Split('\n').Select(l => "    " + l))}");
+        bool ffOk = ffprobeOut.Contains("codec_name=h264")
+            && ffprobeOut.Contains("width=1080") && ffprobeOut.Contains("height=1920")
+            && ffprobeOut.Contains("r_frame_rate=60/1") && !ffprobeOut.Contains("codec_type=audio");
+        Console.WriteLine($"  ffprobe校验: {(ffOk ? "通过(H.264/1080x1920/60FPS/无音频)" : "未通过")}");
+    }
+    else
+    {
+        Console.WriteLine($"  错误: {result.Error}");
+    }
 }
 
 static double PsnrRgb(byte[] rgba, byte[] rgb)
