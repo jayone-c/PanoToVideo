@@ -1,0 +1,40 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PanoToVideo.Core", "PanoToVideo.Core\PanoToVideo.Core.csproj", "{E0E9C546-F8D3-4BFD-8F70-B1974868858E}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PanoToVideo.App", "PanoToVideo.App\PanoToVideo.App.csproj", "{28253EE7-C107-44CE-B2C3-57438635655C}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PanoToVideo.Render", "PanoToVideo.Render\PanoToVideo.Render.csproj", "{28B00CB2-1A68-4992-8B7F-2A32ADFDB178}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PanoToVideo.Tests", "PanoToVideo.Tests\PanoToVideo.Tests.csproj", "{7CDBCBE7-8923-4A97-AC25-ADF5B1718FD5}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{E0E9C546-F8D3-4BFD-8F70-B1974868858E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E0E9C546-F8D3-4BFD-8F70-B1974868858E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E0E9C546-F8D3-4BFD-8F70-B1974868858E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E0E9C546-F8D3-4BFD-8F70-B1974868858E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{28253EE7-C107-44CE-B2C3-57438635655C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{28253EE7-C107-44CE-B2C3-57438635655C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{28253EE7-C107-44CE-B2C3-57438635655C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{28253EE7-C107-44CE-B2C3-57438635655C}.Release|Any CPU.Build.0 = Release|Any CPU
+		{28B00CB2-1A68-4992-8B7F-2A32ADFDB178}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{28B00CB2-1A68-4992-8B7F-2A32ADFDB178}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{28B00CB2-1A68-4992-8B7F-2A32ADFDB178}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{28B00CB2-1A68-4992-8B7F-2A32ADFDB178}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7CDBCBE7-8923-4A97-AC25-ADF5B1718FD5}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7CDBCBE7-8923-4A97-AC25-ADF5B1718FD5}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7CDBCBE7-8923-4A97-AC25-ADF5B1718FD5}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7CDBCBE7-8923-4A97-AC25-ADF5B1718FD5}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

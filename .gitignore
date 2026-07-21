@@ -1,0 +1,32 @@
+## .NET 构建产物
+**/bin/
+**/obj/
+*.user
+*.suo
+.vs/
+*.userprefs
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+## 测试结果
+[Tt]est[Rr]esult*/
+*.coverage
+*.coveragexml
+
+## 应用运行时临时输出
+*.tmp.mp4
+**/exports/
+
+## IDE
+.idea/
+.vscode/
+
+## Python（py360convert 参考帧生成）
+__pycache__/
+*.pyc
+.venv/
+
+## 测试参考帧与 fixture 二进制（由 tests/reference/generate_reference.py 生成，不入库）
+tests/fixtures/*.bin
+tests/reference/*.bin
