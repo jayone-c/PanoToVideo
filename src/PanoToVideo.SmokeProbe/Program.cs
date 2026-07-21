@@ -59,6 +59,24 @@ using (context)
     using var pipeline = new EquirectPipeline(device);
     using var srv = pipeline.UploadErpTexture(erpRgba, erpW, erpH);
 
+    // ADR Q3 验证：GPU BGRA->NV12/Rec.709 limited 颜色转换
+    // 4 色块测试纹理（白/红/绿/蓝），期望 BT.709 limited Y/Cb/Cr
+    var testRgba = new byte[] { 255,255,255,255,  255,0,0,255,  0,255,0,255,  0,0,255,255 };
+    using var testSrv = pipeline.UploadErpTexture(testRgba, 4, 1);
+    var (yPlane, uvPlane) = pipeline.ConvertBgraToYuv(testSrv, 4, 1);
+    int[][] exp = { new[]{235,128,128}, new[]{63,102,240}, new[]{173,42,26}, new[]{32,240,118} };
+    string[] names = { "白", "红", "绿", "蓝" };
+    Console.WriteLine("\n[ADR Q3] BGRA->NV12 Rec.709 limited 颜色转换:");
+    bool q3Pass = true;
+    for (int i = 0; i < 4; i++)
+    {
+        int Y = yPlane[i], Cb = uvPlane[i * 2], Cr = uvPlane[i * 2 + 1];
+        bool ok = Math.Abs(Y - exp[i][0]) <= 2 && Math.Abs(Cb - exp[i][1]) <= 2 && Math.Abs(Cr - exp[i][2]) <= 2;
+        q3Pass &= ok;
+        Console.WriteLine($"  {names[i]}: Y={Y}(期{exp[i][0]}) Cb={Cb}(期{exp[i][1]}) Cr={Cr}(期{exp[i][2]}) {(ok ? "OK" : "FAIL")}");
+    }
+    Console.WriteLine($"[ADR Q3] 颜色转换: {(q3Pass ? "通过" : "失败")}");
+
     // 4. 多视角渲染并与 py360convert + Core 双重对照
     const int ow = 320, oh = 320;
     var cases = new[] { (0, 0), (90, 0), (180, 0), (270, 0), (0, 30), (0, -30), (45, 15) };

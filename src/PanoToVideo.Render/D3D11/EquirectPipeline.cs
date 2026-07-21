@@ -28,6 +28,8 @@ public sealed class EquirectPipeline : IDisposable
     private readonly ID3D11Buffer _vertexBuffer;
     private readonly ID3D11InputLayout _inputLayout;
     private readonly ID3D11RasterizerState _rasterizerState;
+    private readonly ID3D11VertexShader _ccVs;
+    private readonly ID3D11PixelShader _ccPs;
 
     // cbuffer Params：与 equirect.hlsl 的 cbuffer 布局一致（8 float = 32 字节）
     [StructLayout(LayoutKind.Sequential, Size = 32)]
@@ -91,6 +93,13 @@ public sealed class EquirectPipeline : IDisposable
             FrontCounterClockwise = false,
             DepthClipEnable = true,
         });
+
+        // 颜色转换 shader（BGRA->NV12 Y/UV，ADR Q3）
+        string ccPath = Path.Combine(AppContext.BaseDirectory, "Shaders", "colorconvert.hlsl");
+        var ccVsBc = CompileShader(ccPath, "VSMain", "vs_5_0");
+        var ccPsBc = CompileShader(ccPath, "PSMain", "ps_5_0");
+        _ccVs = device.CreateVertexShader(ccVsBc.Span);
+        _ccPs = device.CreatePixelShader(ccPsBc.Span);
     }
 
     /// <summary>把 RGBA 像素上传为 ERP 纹理 SRV（R8G8B8A8_UNorm）。</summary>
@@ -118,6 +127,86 @@ public sealed class EquirectPipeline : IDisposable
         finally
         {
             handle.Free();
+        }
+    }
+
+    /// <summary>
+    /// 把 BGRA 纹理转换为 NV12 Y/UV（Rec.709 limited range，ADR Q3）。
+    /// 返回 Y（R8，行优先）和 UV（R8G8，行优先，全分辨率验证用；真 NV12 布局在 Q2 接 MF 时处理）。
+    /// </summary>
+    public (byte[] Y, byte[] Uv) ConvertBgraToYuv(ID3D11ShaderResourceView bgraSrv, int width, int height)
+    {
+        var yDesc = new Texture2DDescription
+        {
+            Width = (uint)width,
+            Height = (uint)height,
+            MipLevels = 1,
+            ArraySize = 1,
+            Format = Format.R8_UNorm,
+            SampleDescription = new SampleDescription(1, 0),
+            Usage = ResourceUsage.Default,
+            BindFlags = BindFlags.RenderTarget,
+        };
+        using var yTex = _device.CreateTexture2D(yDesc);
+        using var yRtv = _device.CreateRenderTargetView(yTex);
+
+        var uvDesc = yDesc;
+        uvDesc.Format = Format.R8G8_UNorm;
+        using var uvTex = _device.CreateTexture2D(uvDesc);
+        using var uvRtv = _device.CreateRenderTargetView(uvTex);
+
+        var p = new Params { OutW = width, OutH = height };
+        _context.UpdateSubresource(ref p, _paramsBuffer);
+
+        _context.ClearRenderTargetView(yRtv, new Color4(0, 0, 0, 1));
+        _context.ClearRenderTargetView(uvRtv, new Color4(0, 0, 0, 1));
+        _context.OMSetRenderTargets(new[] { yRtv, uvRtv }, null);
+        _context.RSSetViewport(new Viewport(width, height));
+        _context.RSSetState(_rasterizerState);
+        _context.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
+        _context.IASetInputLayout(_inputLayout);
+        _context.IASetVertexBuffer(0, _vertexBuffer, 8);
+        _context.VSSetShader(_ccVs);
+        _context.PSSetShader(_ccPs);
+        _context.PSSetShaderResources(0, new[] { bgraSrv });
+        _context.PSSetSamplers(0, new[] { _sampler });
+        _context.PSSetConstantBuffers(0, new[] { _paramsBuffer });
+        _context.Draw(3, 0);
+
+        var yBytes = ReadBack(yTex, width, height, 1);
+        var uvBytes = ReadBack(uvTex, width, height, 2);
+        return (yBytes, uvBytes);
+    }
+
+    private byte[] ReadBack(ID3D11Texture2D src, int width, int height, int bytesPerPixel)
+    {
+        var desc = src.Description;
+        var stagingDesc = new Texture2DDescription
+        {
+            Width = (uint)width,
+            Height = (uint)height,
+            MipLevels = 1,
+            ArraySize = 1,
+            Format = desc.Format,
+            SampleDescription = new SampleDescription(1, 0),
+            Usage = ResourceUsage.Staging,
+            BindFlags = BindFlags.None,
+            CPUAccessFlags = CpuAccessFlags.Read,
+        };
+        using var staging = _device.CreateTexture2D(stagingDesc);
+        _context.CopyResource(staging, src);
+        var mapped = _context.Map(staging, 0, MapMode.Read);
+        try
+        {
+            var bytes = new byte[width * height * bytesPerPixel];
+            int srcRow = (int)mapped.RowPitch;
+            for (int y = 0; y < height; y++)
+                Marshal.Copy(IntPtr.Add(mapped.DataPointer, y * srcRow), bytes, y * width * bytesPerPixel, width * bytesPerPixel);
+            return bytes;
+        }
+        finally
+        {
+            _context.Unmap(staging, 0);
         }
     }
 
@@ -209,6 +298,8 @@ public sealed class EquirectPipeline : IDisposable
 
     public void Dispose()
     {
+        _ccPs.Dispose();
+        _ccVs.Dispose();
         _rasterizerState.Dispose();
         _inputLayout.Dispose();
         _vertexBuffer.Dispose();
