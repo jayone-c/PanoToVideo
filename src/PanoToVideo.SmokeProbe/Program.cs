@@ -15,22 +15,23 @@ using static Vortice.Direct3D11.D3D11;
 //       与 py360convert 参考帧（PSNR ≥ 40dB）及 Core EquirectRenderer 双重对照。
 // 结论：GPU shader 几何全部通过（PSNR 49-54dB）。
 
-Console.WriteLine("=== 阶段0 探针 · GPU shader 几何验证 ===");
+Console.WriteLine("=== 阶段1 · DeviceProbe 真实化验证 (ADR Q4) ===");
 
-// 1. 枚举适配器并选 NVIDIA 4090D
-var adapters = DxgiDeviceEnumerator.Enumerate();
-Console.WriteLine("DXGI 适配器:");
-foreach (var (_, c) in adapters)
-    Console.WriteLine($"  - {c.Description}  VRAM={c.DedicatedVideoMemoryBytes / 1024 / 1024}MB  Software={c.IsSoftware}  Luid=0x{c.Luid:X16}");
+// ADR Q4: DeviceProbe 对每个非软件适配器做 MF 编码器激活探测，区分真实 GPU 与虚拟镜像适配器
+using var deviceProbe = new DeviceProbe();
+var probeResult = deviceProbe.Probe();
+Console.WriteLine($"合格设备数: {probeResult.Eligible.Count}");
+foreach (var e in probeResult.Eligible)
+    Console.WriteLine($"  - {e.Candidate.Description}  VRAM={e.Candidate.DedicatedVideoMemoryBytes / 1024 / 1024}MB  Luid=0x{e.Candidate.Luid:X16}  编码器={e.EncoderName ?? "?"}");
 
-var selected = adapters.FirstOrDefault(x => x.Candidate.Description.Contains("NVIDIA"));
-if (selected.Adapter == null)
-    throw new InvalidOperationException("未找到 NVIDIA 适配器");
-Console.WriteLine($"\n选定渲染设备: {selected.Candidate.Description}  Luid=0x{selected.Candidate.Luid:X16}");
+if (probeResult.Preferred == null)
+    throw new InvalidOperationException("DeviceProbe 未找到合格设备");
+var preferred = probeResult.Preferred;
+Console.WriteLine($"\n首选设备: {preferred.Candidate.Description}  Luid=0x{preferred.Candidate.Luid:X16}  编码器={preferred.EncoderName}");
 
-// 2. 创建 D3D11 设备（绑定到选定适配器）
+// 用首选适配器创建 D3D11 设备
 FeatureLevel[] featureLevels = [FeatureLevel.Level_11_1, FeatureLevel.Level_11_0];
-D3D11CreateDevice(selected.Adapter.QueryInterface<IDXGIAdapter>(), DriverType.Unknown,
+D3D11CreateDevice(preferred.Adapter, DriverType.Unknown,
     DeviceCreationFlags.BgraSupport, featureLevels,
     out ID3D11Device device, out FeatureLevel featureLevel, out ID3D11DeviceContext context).CheckError();
 Console.WriteLine($"D3D11 设备创建成功，FeatureLevel={featureLevel}");
@@ -43,7 +44,6 @@ Console.WriteLine($"\n[ADR Q1] MF 设备挂载: {(mfMount.CanMountDevice ? "成�
 var encoderCount = MfDeviceProbe.EnumerateH264HardwareEncoders();
 Console.WriteLine($"[ADR Q1] H.264 硬件编码器数量: {encoderCount}");
 
-using (selected.Adapter)
 using (device)
 using (context)
 {
