@@ -2,6 +2,7 @@ using PanoToVideo.Core.Exporting;
 using PanoToVideo.Core.Parameters;
 using PanoToVideo.Core.Precheck;
 using PanoToVideo.Core.Projection;
+using PanoToVideo.Core.Queue;
 using PanoToVideo.Core.Validation;
 using PanoToVideo.Render.D3D11;
 using PanoToVideo.Render.DeviceProbe;
@@ -14,6 +15,7 @@ using Vortice.Direct3D11;
 using Vortice.DXGI;
 using Vortice.Mathematics;
 using Format = Vortice.DXGI.Format;
+using TaskStatus = PanoToVideo.Core.Queue.TaskStatus;
 using static Vortice.Direct3D11.D3D11;
 
 // ===== 阶段0 探针 · GPU shader 几何验证 =====
@@ -292,6 +294,70 @@ Console.WriteLine("\n=== 阶段1 · 单图导出全链路 ===");
             Console.WriteLine($"  编码后首末帧PSNR: {encPsnr:F2}dB {(noJump ? "(无几何跳变)" : "(可能几何跳变!)")}");
             try { File.Delete(frame0); File.Delete(frameN); } catch { }
         }
+    }
+}
+
+// ===== 阶段2 · 批量队列验收（任务3/7，100项可行性验证用5项）=====
+Console.WriteLine("\n=== 阶段2 · 批量队列验收 ===");
+{
+    string repoRoot = FindRepoRoot();
+    var erpRgb = File.ReadAllBytes(Path.Combine(repoRoot, "tests", "fixtures", "erp_8192x4096.bin"));
+    const int erpW = 8192, erpH = 4096;
+    var erpRgba = new byte[erpW * erpH * 4];
+    for (int i = 0; i < erpW * erpH; i++)
+    {
+        erpRgba[i * 4] = erpRgb[i * 3];
+        erpRgba[i * 4 + 1] = erpRgb[i * 3 + 1];
+        erpRgba[i * 4 + 2] = erpRgb[i * 3 + 2];
+        erpRgba[i * 4 + 3] = 255;
+    }
+
+    // 5 项队列（模拟多图，缩短参数省时：1秒60FPS=60帧，640×640）
+    var batchParams = new RenderParameters(1, 360, 60, 75.0, 640, 640, 0.0,
+        RotationDirection.Clockwise, false);
+    var items = new List<QueueItem>();
+    for (int i = 0; i < 5; i++)
+        items.Add(new QueueItem($"scene{i}_equirectangular_8192x4096.jpg", erpW, erpH));
+
+    string batchDir = Path.Combine(repoRoot, "smoke_batch");
+    if (Directory.Exists(batchDir)) Directory.Delete(batchDir, true);
+    Directory.CreateDirectory(batchDir);
+    long avail = new DriveInfo(Path.GetPathRoot(batchDir)!).AvailableFreeSpace;
+
+    // executorFactory: 每项创建 GpuExportExecutor（共享同一 ERP RGBA）
+    var scheduler = new SerialBatchScheduler(
+        executorFactory: (item, rgba, w, h) => new GpuExportExecutor(rgba, w, h, batchParams, ExportPreset.Compatibility),
+        erpLoader: item => (erpRgba, erpW, erpH));
+
+    var sw = Stopwatch.StartNew();
+    await scheduler.RunAsync(items, batchParams, ExportPreset.Compatibility, batchDir, avail, default);
+    sw.Stop();
+
+    Console.WriteLine($"批量完成: {items.Count}项, 耗时{sw.Elapsed.TotalSeconds:F2}s");
+    foreach (var item in items)
+        Console.WriteLine($"  {item.SourceFileName}: {item.Status} 输出={Path.GetFileName(item.OutputPath ?? "(无)")} FPS={item.AverageFps:F0} 错误={item.ErrorMessage ?? "无"}");
+
+    // 验收：全部完成、命名递增、日志设备证明
+    int completed = items.Count(i => i.Status == TaskStatus.Completed);
+    Console.WriteLine($"\n验收:");
+    Console.WriteLine($"  完成数: {completed}/{items.Count}");
+    var outputs = items.Where(i => i.OutputPath != null).Select(i => Path.GetFileName(i.OutputPath!)).ToList();
+    Console.WriteLine($"  输出文件: {string.Join(", ", outputs)}");
+    // 5项同名应递增 _0.._4? 实际重名递增：首项无后缀，后续 _1.._4
+    bool namingOk = outputs.Count == 5 && outputs.Distinct().Count() == 5;
+    Console.WriteLine($"  命名唯一(重名递增不覆盖): {namingOk}");
+    Console.WriteLine($"  首项进度上报: 投影FPS={items[0].Progress.ProjectionFps:F0} 编码FPS={items[0].Progress.EncodingFps:F0} 总帧={items[0].Progress.TotalFrames}");
+    Console.WriteLine($"  结论: {(completed == 5 && namingOk ? "批量队列验收通过" : "存在问题")}");
+
+    // ffprobe 抽检首项
+    if (items[0].OutputPath != null)
+    {
+        var psi = new ProcessStartInfo("ffprobe",
+            $"-v error -show_entries stream=codec_name,width,height,r_frame_rate -of default=noprint_wrappers=1 \"{items[0].OutputPath}\"")
+        { RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
+        var p = Process.Start(psi)!;
+        var o = p.StandardOutput.ReadToEnd(); p.WaitForExit();
+        Console.WriteLine($"  ffprobe首项: {o.Trim().Replace("\n", " ")}");
     }
 }
 
