@@ -34,7 +34,9 @@ public sealed class SingleImageExportOrchestrator
         string outputDir,
         long availableBytes,
         IReadOnlyCollection<string> existingOutputFiles,
-        IExportExecutor executor)
+        IExportExecutor executor,
+        CancellationToken cancellationToken = default,
+        IProgress<ExportProgress>? progress = null)
     {
         // 1. ERP 校验
         var validator = new EquirectValidator();
@@ -58,8 +60,22 @@ public sealed class SingleImageExportOrchestrator
         // 4. 临时文件: {最终名}.{guid}.tmp.mp4
         var tmpPath = Path.Combine(exportsDir, $"{Path.GetFileNameWithoutExtension(finalPath)}.{Guid.NewGuid():N}.tmp.mp4");
 
-        // 5. 执行导出（委托写临时文件）
-        var exec = executor.Execute(tmpPath, imageInfo, parameters, preset);
+        // 5. 执行导出（委托写临时文件，支持取消与逐帧进度）
+        ExportExecutionResult exec;
+        try
+        {
+            exec = executor.Execute(tmpPath, imageInfo, parameters, preset, cancellationToken, progress);
+        }
+        catch (OperationCanceledException)
+        {
+            executor.Cleanup(tmpPath);
+            return ExportResult.Failed("已取消");
+        }
+        catch (Exception ex)
+        {
+            executor.Cleanup(tmpPath);
+            return ExportResult.Failed($"{ex.GetType().Name}: {ex.Message}");
+        }
         if (!exec.Success)
         {
             // 失败清理临时文件，不删源图
@@ -88,8 +104,14 @@ public sealed class SingleImageExportOrchestrator
 /// <summary>导出执行接口（注入 GPU 实现，编排可单测）。</summary>
 public interface IExportExecutor
 {
-    /// <summary>执行 GPU 导出，写到 tmpPath。</summary>
-    ExportExecutionResult Execute(string tmpPath, ImageInfo imageInfo, RenderParameters parameters, ExportPreset preset);
+    /// <summary>执行 GPU 导出，写到 tmpPath。支持取消与逐帧进度上报。</summary>
+    ExportExecutionResult Execute(
+        string tmpPath,
+        ImageInfo imageInfo,
+        RenderParameters parameters,
+        ExportPreset preset,
+        CancellationToken cancellationToken = default,
+        IProgress<ExportProgress>? progress = null);
 
     /// <summary>原子重命名 tmp -> final。</summary>
     void AtomicMove(string tmpPath, string finalPath);

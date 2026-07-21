@@ -23,11 +23,19 @@ public class SingleImageExportOrchestratorTests
         public string? LastFinalPath { get; private set; }
         public bool CleanedUp { get; private set; }
         public bool Executed { get; private set; }
+        public CancellationToken? ReceivedToken { get; private set; }
+        public bool ProgressReported { get; private set; }
 
-        public ExportExecutionResult Execute(string tmpPath, ImageInfo imageInfo, RenderParameters parameters, ExportPreset preset)
+        public ExportExecutionResult Execute(
+            string tmpPath, ImageInfo imageInfo, RenderParameters parameters, ExportPreset preset,
+            CancellationToken cancellationToken = default,
+            IProgress<ExportProgress>? progress = null)
         {
             Executed = true;
             LastTmpPath = tmpPath;
+            ReceivedToken = cancellationToken;
+            progress?.Report(new ExportProgress(0, parameters.TotalFrames, 60, 60, TimeSpan.Zero));
+            ProgressReported = progress != null;
             return ExecuteShouldFail
                 ? new ExportExecutionResult(false, "执行失败模拟", TimeSpan.Zero, 0)
                 : new ExportExecutionResult(true, null, TimeSpan.FromSeconds(1), 60.0);
@@ -146,5 +154,42 @@ public class SingleImageExportOrchestratorTests
 
         Assert.True(result.Success);
         Assert.Contains("_1.mp4", result.OutputPath!);
+    }
+
+    [Fact]
+    public void 取消令牌透传到执行器()
+    {
+        var executor = new FakeExecutor();
+        var sut = new SingleImageExportOrchestrator();
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        sut.Export(ValidImage(), Params, ExportPreset.Compatibility,
+            OutDir, PlentyDisk, Array.Empty<string>(), executor, cts.Token);
+
+        Assert.True(executor.ReceivedToken?.IsCancellationRequested);
+    }
+
+    [Fact]
+    public void 进度回调透传到执行器()
+    {
+        var executor = new FakeExecutor();
+        var sut = new SingleImageExportOrchestrator();
+        var progresses = new List<ExportProgress>();
+        // 用同步 IProgress 实现（Progress<T> 是异步派发，测试同步断言会漏）
+        IProgress<ExportProgress> progress = new SyncProgress<ExportProgress>(p => progresses.Add(p));
+
+        sut.Export(ValidImage(), Params, ExportPreset.Compatibility,
+            OutDir, PlentyDisk, Array.Empty<string>(), executor, default, progress);
+
+        Assert.True(executor.ProgressReported);
+        Assert.NotEmpty(progresses);
+    }
+
+    private sealed class SyncProgress<T> : IProgress<T>
+    {
+        private readonly Action<T> _callback;
+        public SyncProgress(Action<T> callback) => _callback = callback;
+        public void Report(T value) => _callback(value);
     }
 }

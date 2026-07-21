@@ -34,7 +34,10 @@ public sealed class GpuExportExecutor : IExportExecutor
         _bitrate = (uint)ExportPrecheck.EstimateBitrate(preset, parameters.Width, parameters.Height, parameters.Fps);
     }
 
-    public ExportExecutionResult Execute(string tmpPath, ImageInfo imageInfo, RenderParameters parameters, ExportPreset preset)
+    public ExportExecutionResult Execute(
+        string tmpPath, ImageInfo imageInfo, RenderParameters parameters, ExportPreset preset,
+        CancellationToken cancellationToken = default,
+        IProgress<ExportProgress>? progress = null)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         int totalFrames = parameters.TotalFrames;
@@ -61,19 +64,43 @@ public sealed class GpuExportExecutor : IExportExecutor
                 using var encoder = new MfH264Encoder(device, tmpPath,
                     parameters.Width, parameters.Height, parameters.Fps, _bitrate);
 
-                // 4. 逐帧：YawSchedule -> RenderFrameToNv12 -> 零拷贝编码
+                // 4. 逐帧：YawSchedule -> RenderFrameToNv12(投影+颜色转换) -> 零拷贝编码
+                // 分阶段计时：投影段(含颜色转换,GPU管线) vs 编码段(SubmitFrame)，非伪造串行
+                double projSec = 0, encSec = 0;
                 for (int i = 0; i < totalFrames; i++)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
+
                     double yaw = YawSchedule.YawAt(i, totalFrames, parameters.RotationDegrees, parameters.Direction);
+
+                    var ps = System.Diagnostics.Stopwatch.StartNew();
                     using var nv12 = pipeline.RenderFrameToNv12(srv, _erpW, _erpH,
                         parameters.Width, parameters.Height, parameters.HorizontalFov, yaw, parameters.Pitch);
+                    ps.Stop();
+                    projSec += ps.Elapsed.TotalSeconds;
+
+                    var es = System.Diagnostics.Stopwatch.StartNew();
                     encoder.SubmitFrame(nv12, i);
+                    es.Stop();
+                    encSec += es.Elapsed.TotalSeconds;
+
+                    // 逐帧进度上报（投影FPS / 编码FPS，分阶段）
+                    progress?.Report(new ExportProgress(
+                        i, totalFrames,
+                        projSec > 0 ? (i + 1) / projSec : 0,
+                        encSec > 0 ? (i + 1) / encSec : 0,
+                        sw.Elapsed));
                 }
                 encoder.Finalize();
             }
             sw.Stop();
             double avgFps = totalFrames > 0 ? totalFrames / sw.Elapsed.TotalSeconds : 0;
             return new ExportExecutionResult(true, null, sw.Elapsed, avgFps);
+        }
+        catch (OperationCanceledException)
+        {
+            sw.Stop();
+            return new ExportExecutionResult(false, "已取消", sw.Elapsed, 0);
         }
         catch (Exception ex)
         {
