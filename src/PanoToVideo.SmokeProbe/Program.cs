@@ -37,6 +37,14 @@ if (probeResult.Preferred == null)
 var preferred = probeResult.Preferred;
 Console.WriteLine($"\n首选设备: {preferred.Candidate.Description}  Luid=0x{preferred.Candidate.Luid:X16}  编码器={preferred.EncoderName}");
 
+// 阶段3: H.265 编码器探测 + 预设退回（任务3）
+using var hevcProbe = new MfHevcEncoderProbe();
+var hevcAvailable = hevcProbe.IsAvailable();
+var resolver = new PresetResolver(hevcProbe);
+var sizeResult = resolver.Resolve(ExportPreset.Size);
+Console.WriteLine($"[阶段3] H.265 硬件编码器: {(hevcAvailable ? "可用" : "不可用")}");
+Console.WriteLine($"[阶段3] 体积优先(H.265)预设 -> {sizeResult.Preset}  {(sizeResult.FallbackReason ?? "无退回")}");
+
 // 用首选适配器创建 D3D11 设备
 FeatureLevel[] featureLevels = [FeatureLevel.Level_11_1, FeatureLevel.Level_11_0];
 D3D11CreateDevice(preferred.Adapter, DriverType.Unknown,
@@ -252,6 +260,45 @@ Console.WriteLine("\n=== 阶段1 · 单图导出全链路 ===");
         Console.WriteLine($"  错误: {result.Error}");
     }
 
+    // ===== 阶段3 · 小行星开场验证（§1.5，任务4）=====
+    Console.WriteLine("\n=== 阶段3 · 小行星开场 ===");
+    {
+        // 复用单图导出的 ERP RGBA（在外层作用域已定义 erpRgba/erpW/erpH）
+        using var probe3 = new DeviceProbe();
+        var pref3 = probe3.Probe().Preferred!;
+        D3D11CreateDevice(pref3.Adapter, DriverType.Unknown, DeviceCreationFlags.BgraSupport,
+            [FeatureLevel.Level_11_1, FeatureLevel.Level_11_0],
+            out ID3D11Device dev3, out _, out _).CheckError();
+        using (dev3)
+        {
+            using var pipe3 = new EquirectPipeline(dev3);
+            using var srv3 = pipe3.UploadErpTexture(erpRgba, erpW, erpH);
+            const int aw = 320, ah = 320;
+
+            // 关闭：第0帧 weight=0 即纯透视
+            var closedFrame = pipe3.RenderFrameToRgba(srv3, erpW, erpH, aw, ah, 75, 0, 0, asteroidWeight: 0);
+            // 启用：第0帧 weight=1 纯小行星
+            var astFrame = pipe3.RenderFrameToRgba(srv3, erpW, erpH, aw, ah, 75, 0, 0, asteroidWeight: 1);
+            // 过渡末（第48帧）weight≈0，与纯透视接近（无突跳）
+            var transEnd = pipe3.RenderFrameToRgba(srv3, erpW, erpH, aw, ah, 75, 0, 0,
+                asteroidWeight: AsteroidSchedule.WeightAt(48, 60, true));
+
+            int nonZeroClosed = CountNonZero(closedFrame);
+            int nonZeroAst = CountNonZero(astFrame);
+            // 真正的契约验证：
+            // 1. 关闭(透视) vs 启用第0帧(纯小行星) 应不同（不同投影方向）
+            double psnrClosedVsAst = PsnrRgbaToRgba(closedFrame, astFrame);
+            // 2. 过渡末(weight≈0) vs 关闭(透视) 应相同（无突跳，PSNR高）
+            double psnrTransVsPersp = PsnrRgbaToRgba(transEnd, closedFrame);
+
+            Console.WriteLine($"  关闭(透视)非零像素 {nonZeroClosed}; 启用(小行星)非零 {nonZeroAst}");
+            Console.WriteLine($"  关闭(透视) vs 启用(小行星) PSNR={psnrClosedVsAst:F2}dB (应较低=不同投影)");
+            Console.WriteLine($"  过渡末(weight={AsteroidSchedule.WeightAt(48, 60, true):F3}) vs 纯透视 PSNR={psnrTransVsPersp:F2}dB (应高=无突跳)");
+            bool ok = psnrClosedVsAst < 30 && psnrTransVsPersp > 20;
+            Console.WriteLine($"  结论: {(ok ? "小行星开/关行为符合预期(第0帧不同投影,过渡末无突跳)" : "异常")}");
+        }
+    }
+
     // ===== 阶段1 · 360° 首尾一致性验证（任务6）=====
     Console.WriteLine("\n=== 阶段1 · 360° 首尾一致性 ===");
     if (result.Success)
@@ -379,6 +426,29 @@ static double PsnrRgb(byte[] rgba, byte[] rgb)
         int dr = rgba[i * 4] - rgb[i * 3];
         int dg = rgba[i * 4 + 1] - rgb[i * 3 + 1];
         int db = rgba[i * 4 + 2] - rgb[i * 3 + 2];
+        sq += (double)dr * dr + dg * dg + db * db;
+    }
+    double mse = sq / (n * 3);
+    return mse < 1e-10 ? 100.0 : 10.0 * Math.Log10(255.0 * 255.0 / mse);
+}
+
+static int CountNonZero(byte[] rgba)
+{
+    int n = 0;
+    for (int i = 0; i < rgba.Length; i += 4)
+        if (rgba[i] > 0 || rgba[i + 1] > 0 || rgba[i + 2] > 0) n++;
+    return n;
+}
+
+static double PsnrRgbaToRgba(byte[] a, byte[] b)
+{
+    int n = a.Length / 4;
+    double sq = 0;
+    for (int i = 0; i < n; i++)
+    {
+        int dr = a[i * 4] - b[i * 4];
+        int dg = a[i * 4 + 1] - b[i * 4 + 1];
+        int db = a[i * 4 + 2] - b[i * 4 + 2];
         sq += (double)dr * dr + dg * dg + db * db;
     }
     double mse = sq / (n * 3);

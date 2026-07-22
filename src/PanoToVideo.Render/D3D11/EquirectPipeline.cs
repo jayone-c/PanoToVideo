@@ -30,13 +30,15 @@ public sealed class EquirectPipeline : IDisposable
     private readonly ID3D11RasterizerState _rasterizerState;
     private readonly ID3D11VertexShader _ccVs;
     private readonly ID3D11PixelShader _ccPs;
+    private readonly ID3D11PixelShader _asteroidPs;
 
-    // cbuffer Params：与 equirect.hlsl 的 cbuffer 布局一致（8 float = 32 字节）
+    // cbuffer Params：与 equirect/asteroid.hlsl 的 cbuffer 布局一致（8 float = 32 字节）
+    // 第7位在 equirect shader 为 pad，在 asteroid shader 为 g_asteroidWeight（equirect 不读）
     [StructLayout(LayoutKind.Sequential, Size = 32)]
     private struct Params
     {
         public float OutW, OutH, TanHalfHFov, TanHalfVFov;
-        public float YawRad, PitchRad, Pad0, Pad1;
+        public float YawRad, PitchRad, AsteroidWeight, Pad1;
     }
 
     public ID3D11Device Device => _device;
@@ -100,6 +102,11 @@ public sealed class EquirectPipeline : IDisposable
         var ccPsBc = CompileShader(ccPath, "PSMain", "ps_5_0");
         _ccVs = device.CreateVertexShader(ccVsBc.Span);
         _ccPs = device.CreatePixelShader(ccPsBc.Span);
+
+        // 小行星 shader（独立球面投影 + 透视过渡，复用 equirect 的 VS）
+        string astPath = Path.Combine(AppContext.BaseDirectory, "Shaders", "asteroid.hlsl");
+        var astPsBc = CompileShader(astPath, "PSMain", "ps_5_0");
+        _asteroidPs = device.CreatePixelShader(astPsBc.Span);
     }
 
     /// <summary>把 RGBA 像素上传为 ERP 纹理 SRV（R8G8B8A8_UNorm）。</summary>
@@ -294,10 +301,12 @@ public sealed class EquirectPipeline : IDisposable
         return nv12Tex;
     }
 
-    /// <summary>渲染单帧到 R8G8B8A8 RenderTarget 并回读 RGBA 字节（行优先）。</summary>
+    /// <summary>渲染单帧到 R8G8B8A8 RenderTarget 并回读 RGBA 字节（行优先）。
+    /// asteroidWeight=0 纯透视（默认）；>0 时混合小行星投影（阶段3 §1.5）。</summary>
     public byte[] RenderFrameToRgba(
         ID3D11ShaderResourceView erpSrv, int erpW, int erpH,
-        int outW, int outH, double hFovDeg, double yawDeg, double pitchDeg)
+        int outW, int outH, double hFovDeg, double yawDeg, double pitchDeg,
+        double asteroidWeight = 0.0)
     {
         var rtDesc = new Texture2DDescription
         {
@@ -322,6 +331,7 @@ public sealed class EquirectPipeline : IDisposable
             TanHalfVFov = (float)Math.Tan(vFovDeg * 0.5 * Math.PI / 180.0),
             YawRad = (float)(yawDeg * Math.PI / 180.0),
             PitchRad = (float)(pitchDeg * Math.PI / 180.0),
+            AsteroidWeight = (float)asteroidWeight,
         };
         _context.UpdateSubresource(ref p, _paramsBuffer);
 
@@ -333,7 +343,8 @@ public sealed class EquirectPipeline : IDisposable
         _context.IASetInputLayout(_inputLayout);
         _context.IASetVertexBuffer(0, _vertexBuffer, 8);
         _context.VSSetShader(_vs);
-        _context.PSSetShader(_ps);
+        // asteroidWeight>0 用小行星 shader（含透视/小行星混合），=0 用纯透视 equirect shader
+        _context.PSSetShader(asteroidWeight > 0 ? _asteroidPs : _ps);
         _context.PSSetShaderResources(0, new[] { erpSrv });
         _context.PSSetSamplers(0, new[] { _sampler });
         _context.PSSetConstantBuffers(0, new[] { _paramsBuffer });
@@ -382,6 +393,7 @@ public sealed class EquirectPipeline : IDisposable
 
     public void Dispose()
     {
+        _asteroidPs.Dispose();
         _ccPs.Dispose();
         _ccVs.Dispose();
         _rasterizerState.Dispose();
