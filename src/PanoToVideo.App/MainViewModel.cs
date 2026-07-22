@@ -144,7 +144,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             string outDir = Path.GetDirectoryName(SelectedFilePath)!;
             long avail = new DriveInfo(Path.GetPathRoot(outDir)!).AvailableFreeSpace;
 
-            var executor = new GpuExportExecutor(rgba, w, h, _settings.RenderParameters, presetResult.Preset);
+            var executor = new FfmpegNvencExecutor(rgba, w, h, _settings.RenderParameters, presetResult.Preset);
             var orchestrator = new SingleImageExportOrchestrator();
 
             var progress = new ProgressAdapter<ExportProgress>(p =>

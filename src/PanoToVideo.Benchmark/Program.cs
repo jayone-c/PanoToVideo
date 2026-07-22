@@ -51,7 +51,7 @@ if (Directory.Exists(outDir)) Directory.Delete(outDir, true);
 Directory.CreateDirectory(outDir);
 long avail = new DriveInfo(Path.GetPathRoot(outDir)!).AvailableFreeSpace;
 
-var executor = new GpuExportExecutor(erpRgba, erpW, erpH, parameters, ExportPreset.Compatibility);
+var executor = new FfmpegNvencExecutor(erpRgba, erpW, erpH, parameters, ExportPreset.Compatibility);
 var orchestrator = new SingleImageExportOrchestrator();
 
 var progress = new ProgressAdapter<ExportProgress>(p =>
