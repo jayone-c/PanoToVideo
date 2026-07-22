@@ -27,6 +27,8 @@ public sealed class FfmpegNvencExecutor : IExportExecutor
     private readonly int _erpH;
     private readonly uint _bitrate;
     private DeviceEntry? _device;
+    // 静态缓存：批量任务复用设备探测结果，避免每项重新探测（0.4s/项）
+    private static readonly CachedDeviceProbe s_cachedProbe = new();
 
     public FfmpegNvencExecutor(byte[] erpRgba, int erpW, int erpH, RenderParameters parameters, ExportPreset preset)
     {
@@ -47,9 +49,8 @@ public sealed class FfmpegNvencExecutor : IExportExecutor
         {
             Directory.CreateDirectory(Path.GetDirectoryName(tmpPath)!);
 
-            // 1. DeviceProbe 选首选设备（GPU 投影用）
-            using var probe = new DeviceProbeImpl();
-            _device = probe.Probe().Preferred ?? throw new InvalidOperationException("无合格 GPU 设备");
+            // 1. DeviceProbe 选首选设备（缓存复用，避免每项重新探测）
+            _device = s_cachedProbe.Probe().Preferred ?? throw new InvalidOperationException("无合格 GPU 设备");
 
             // 2. 创建 D3D11 设备
             D3D11CreateDevice(_device.Adapter, DriverType.Unknown, DeviceCreationFlags.BgraSupport,

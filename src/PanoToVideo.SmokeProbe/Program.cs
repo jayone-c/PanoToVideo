@@ -296,6 +296,36 @@ Console.WriteLine("\n=== 阶段1 · 单图导出全链路 ===");
             Console.WriteLine($"  过渡末(weight={AsteroidSchedule.WeightAt(48, 60, true):F3}) vs 纯透视 PSNR={psnrTransVsPersp:F2}dB (应高=无突跳)");
             bool ok = psnrClosedVsAst < 30 && psnrTransVsPersp > 20;
             Console.WriteLine($"  结论: {(ok ? "小行星开/关行为符合预期(第0帧不同投影,过渡末无突跳)" : "异常")}");
+
+            // 小行星视觉验证：导出含小行星开场的 MP4 + 抽帧（第0帧纯小行星/过渡中/过渡后透视）
+            Console.WriteLine("\n=== 优化3 · 小行星开场视觉验证 ===");
+            string astOutDir = Path.Combine(repoRoot, "asteroid_vis");
+            if (Directory.Exists(astOutDir)) Directory.Delete(astOutDir, true);
+            Directory.CreateDirectory(astOutDir);
+            var astParams = new RenderParameters(2, 360, 60, 75.0, 640, 640, 0.0,
+                RotationDirection.Clockwise, AsteroidIntro: true);
+            var astExecutor = new FfmpegNvencExecutor(erpRgba, erpW, erpH, astParams, ExportPreset.Compatibility);
+            var astOrchestrator = new SingleImageExportOrchestrator();
+            long astAvail = new DriveInfo(Path.GetPathRoot(astOutDir)!).AvailableFreeSpace;
+            var astResult = astOrchestrator.Export(
+                new ImageInfo(erpW, erpH, false, "scene.jpg"), astParams, ExportPreset.Compatibility,
+                astOutDir, astAvail, Array.Empty<string>(), astExecutor, default, null);
+            if (astResult.Success)
+            {
+                Console.WriteLine($"  小行星视频导出: {Path.GetFileName(astResult.OutputPath)}");
+                // 抽帧：第0帧(纯小行星)、第24帧(过渡中0.4s)、第48帧(过渡末0.8s)、第72帧(过渡后1.2s透视旋转)
+                foreach (var (frame, label) in new[] { (0, "frame0_pureAsteroid"), (24, "frame24_transitionMid"), (48, "frame48_transitionEnd"), (72, "frame72_perspective") })
+                {
+                    var pngPath = Path.Combine(astOutDir, $"{label}.png");
+                    RunFfmpeg($"-y -i \"{astResult.OutputPath}\" -vf \"select=eq(n\\,{frame})\" -frames:v 1 \"{pngPath}\"");
+                }
+                Console.WriteLine($"  抽帧完成: {astOutDir}/frame0_pureAsteroid.png(纯小行星) frame24.png(过渡中) frame48.png(过渡末) frame72.png(透视旋转)");
+                Console.WriteLine($"  人工确认: 第0帧应是小行星投影(底部极点俯视little planet), 第72帧应是正常透视旋转, 过渡连续无突跳");
+            }
+            else
+            {
+                Console.WriteLine($"  小行星视频导出失败: {astResult.Error}");
+            }
         }
     }
 

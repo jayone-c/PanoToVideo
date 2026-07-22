@@ -25,6 +25,7 @@ public sealed class GpuExportExecutor : IExportExecutor
     private readonly int _erpH;
     private readonly uint _bitrate;
     private DeviceEntry? _device;
+    private static readonly CachedDeviceProbe s_cachedProbe = new();
 
     public GpuExportExecutor(byte[] erpRgba, int erpW, int erpH, RenderParameters parameters, ExportPreset preset)
     {
@@ -47,9 +48,8 @@ public sealed class GpuExportExecutor : IExportExecutor
             Directory.CreateDirectory(Path.GetDirectoryName(tmpPath)!);
 
             var tProbe = System.Diagnostics.Stopwatch.StartNew();
-            // 1. DeviceProbe 选首选设备
-            using var probe = new DeviceProbeImpl();
-            var probeResult = probe.Probe();
+            // 1. DeviceProbe 选首选设备（缓存复用）
+            var probeResult = s_cachedProbe.Probe();
             _device = probeResult.Preferred ?? throw new InvalidOperationException("无合格 GPU 设备");
             tProbe.Stop();
 

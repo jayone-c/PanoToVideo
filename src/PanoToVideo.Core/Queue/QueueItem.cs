@@ -1,3 +1,5 @@
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
 using TaskStatus = PanoToVideo.Core.Queue.TaskStatus;
 
 namespace PanoToVideo.Core.Queue;
@@ -6,18 +8,39 @@ namespace PanoToVideo.Core.Queue;
 /// 队列项模型（开发规划阶段2任务1）。
 /// 缩略图、源文件名、尺寸、状态、进度、实际FPS、输出路径、错误原因。
 /// 状态转换委托 <see cref="TaskStateTransitions"/>（非法转换抛异常）。
+/// 实现 INotifyPropertyChanged 供 UI 绑定实时刷新（Core 无 UI 依赖，System.ComponentModel 非 UI）。
 /// </summary>
-public sealed class QueueItem
+public sealed class QueueItem : INotifyPropertyChanged
 {
     public string SourceFileName { get; }
     public int Width { get; }
     public int Height { get; }
-    public TaskStatus Status { get; private set; } = TaskStatus.PendingValidation;
+
+    private TaskStatus _status = TaskStatus.PendingValidation;
+    public TaskStatus Status
+    {
+        get => _status;
+        private set { _status = value; OnPropertyChanged(); OnPropertyChanged(nameof(ProgressText)); }
+    }
+
     public QueueProgress Progress { get; } = new();
-    public double AverageFps { get; private set; }
-    public string? OutputPath { get; private set; }
-    public string? ErrorMessage { get; private set; }
+    private double _averageFps;
+    public double AverageFps { get { return _averageFps; } private set { _averageFps = value; OnPropertyChanged(); } }
+    private string? _outputPath;
+    public string? OutputPath { get { return _outputPath; } private set { _outputPath = value; OnPropertyChanged(); } }
+    private string? _errorMessage;
+    public string? ErrorMessage { get { return _errorMessage; } private set { _errorMessage = value; OnPropertyChanged(); } }
     public byte[]? Thumbnail { get; private set; }
+
+    /// <summary>UI 绑定用进度文本。</summary>
+    public string ProgressText => Status switch
+    {
+        TaskStatus.Completed => $"完成 {AverageFps:F0}fps",
+        TaskStatus.Failed => "失败",
+        TaskStatus.Cancelled => "已取消",
+        TaskStatus.Processing => Progress.TotalFrames > 0 ? $"{Progress.FramesDone}/{Progress.TotalFrames}" : "处理中",
+        _ => Status.ToString(),
+    };
 
     public QueueItem(string sourceFileName, int width, int height)
     {
@@ -34,8 +57,11 @@ public sealed class QueueItem
 
     public void SetThumbnail(byte[] thumbnail) => Thumbnail = thumbnail;
 
-    public void UpdateProgress(int framesDone, int totalFrames, double projectionFps, double encodingFps, TimeSpan elapsed) =>
+    public void UpdateProgress(int framesDone, int totalFrames, double projectionFps, double encodingFps, TimeSpan elapsed)
+    {
         Progress.Update(framesDone, totalFrames, projectionFps, encodingFps, elapsed);
+        OnPropertyChanged(nameof(ProgressText));
+    }
 
     public void SetOutput(string outputPath, double averageFps)
     {
@@ -44,4 +70,7 @@ public sealed class QueueItem
     }
 
     public void SetError(string error) => ErrorMessage = error;
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+    private void OnPropertyChanged([CallerMemberName] string? name = null) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }
