@@ -30,7 +30,10 @@ public sealed class EquirectPipeline : IDisposable
     private readonly ID3D11RasterizerState _rasterizerState;
     private readonly ID3D11VertexShader _ccVs;
     private readonly ID3D11PixelShader _ccPs;
+    private readonly ID3D11PixelShader _ccPsY;
+    private readonly ID3D11PixelShader _ccPsUv;
     private readonly ID3D11PixelShader _asteroidPs;
+    private readonly ID3D11Device1? _device1;
 
     // cbuffer Params：与 equirect/asteroid.hlsl 的 cbuffer 布局一致（8 float = 32 字节）
     // 第7位在 equirect shader 为 pad，在 asteroid shader 为 g_asteroidWeight（equirect 不读）
@@ -47,6 +50,7 @@ public sealed class EquirectPipeline : IDisposable
     {
         _device = device;
         _context = device.ImmediateContext;
+        _device1 = device.QueryInterfaceOrNull<ID3D11Device1>();
 
         // shader 运行时编译（Vortice.D3DCompiler），源码从输出目录 Shaders/equirect.hlsl 读取
         string shaderPath = Path.Combine(AppContext.BaseDirectory, "Shaders", "equirect.hlsl");
@@ -102,6 +106,10 @@ public sealed class EquirectPipeline : IDisposable
         var ccPsBc = CompileShader(ccPath, "PSMain", "ps_5_0");
         _ccVs = device.CreateVertexShader(ccVsBc.Span);
         _ccPs = device.CreatePixelShader(ccPsBc.Span);
+        var ccPsYBc = CompileShader(ccPath, "PSY", "ps_5_0");
+        var ccPsUvBc = CompileShader(ccPath, "PSUv", "ps_5_0");
+        _ccPsY = device.CreatePixelShader(ccPsYBc.Span);
+        _ccPsUv = device.CreatePixelShader(ccPsUvBc.Span);
 
         // 小行星 shader（独立球面投影 + 透视过渡，复用 equirect 的 VS）
         string astPath = Path.Combine(AppContext.BaseDirectory, "Shaders", "asteroid.hlsl");
@@ -271,6 +279,9 @@ public sealed class EquirectPipeline : IDisposable
             BindFlags = BindFlags.RenderTarget | BindFlags.ShaderResource,
         };
         var nv12Tex = _device.CreateTexture2D(nv12Desc);
+        // NV12 平面 RTV（阶段4修复）：Format 区分平面（D3D11.0 标准，视频格式平面视图）
+        // R8_UNorm -> plane 0 (Y 全分辨率), R8G8_UNorm -> plane 1 (UV 半高 4:2:0)
+        // Vortice 未暴露 RTV1/PlaneSlice，用 Format 区分（与阶段0 Q2 验证一致）
         using var yRtv = _device.CreateRenderTargetView(nv12Tex, new RenderTargetViewDescription
         {
             Format = Format.R8_UNorm, ViewDimension = RenderTargetViewDimension.Texture2D,
@@ -282,23 +293,64 @@ public sealed class EquirectPipeline : IDisposable
             Texture2D = new Texture2DRenderTargetView { MipSlice = 0 },
         });
 
-        // colorconvert shader 用同一 cbuffer（OutW/OutH 作为 srcW/srcH 采样 BGRA）
+        // colorconvert cbuffer（OutW/OutH 作为 srcW/srcH 采样 BGRA 全分辨率）
         _context.UpdateSubresource(ref p, _paramsBuffer);
+
+        // Draw Y：全分辨率视口，PS=PSY
         _context.ClearRenderTargetView(yRtv, new Color4(0, 0, 0, 1));
-        _context.ClearRenderTargetView(uvRtv, new Color4(0, 0, 0, 1));
-        _context.OMSetRenderTargets(new[] { yRtv, uvRtv }, null);
+        _context.OMSetRenderTargets(new[] { yRtv }, null);
         _context.RSSetViewport(new Viewport(outW, outH));
+        _context.RSSetState(_rasterizerState);
         _context.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
         _context.IASetInputLayout(_inputLayout);
         _context.IASetVertexBuffer(0, _vertexBuffer, 8);
         _context.VSSetShader(_ccVs);
-        _context.PSSetShader(_ccPs);
+        _context.PSSetShader(_ccPsY);
         _context.PSSetShaderResources(0, new[] { bgraSrv });
         _context.PSSetSamplers(0, new[] { _sampler });
         _context.PSSetConstantBuffers(0, new[] { _paramsBuffer });
         _context.Draw(3, 0);
 
+        // Draw UV：半高视口（outH/2），PS=PSUv（2x2 色度下采样）
+        _context.ClearRenderTargetView(uvRtv, new Color4(0, 0, 0, 1));
+        _context.OMSetRenderTargets(new[] { uvRtv }, null);
+        _context.RSSetViewport(new Viewport(outW, outH / 2f));
+        _context.PSSetShader(_ccPsUv);
+        _context.Draw(3, 0);
+
         return nv12Tex;
+    }
+
+    /// <summary>
+    /// 回读 NV12 纹理为连续字节（Y plane 全分辨率 + UV plane 半高，FFmpeg NV12 布局）。
+    /// 供阶段4回归测试与 FfmpegNvencExecutor 使用。
+    /// </summary>
+    public byte[] ReadNv12ToBytes(ID3D11Texture2D nv12, int w, int h)
+    {
+        var stagingDesc = new Texture2DDescription
+        {
+            Width = (uint)w, Height = (uint)h, MipLevels = 1, ArraySize = 1,
+            Format = nv12.Description.Format, SampleDescription = new SampleDescription(1, 0),
+            Usage = ResourceUsage.Staging, BindFlags = BindFlags.None, CPUAccessFlags = CpuAccessFlags.Read,
+        };
+        using var staging = _device.CreateTexture2D(stagingDesc);
+        _context.CopyResource(staging, nv12);
+        var mapped = _context.Map(staging, 0, MapMode.Read);
+        try
+        {
+            var bytes = new byte[w * h * 3 / 2]; // Y(w*h) + UV(w*h/2)
+            int yPitch = (int)mapped.RowPitch;
+            int ySize = w * h;
+            // Y plane (h rows)
+            for (int y = 0; y < h; y++)
+                Marshal.Copy(IntPtr.Add(mapped.DataPointer, y * yPitch), bytes, y * w, w);
+            // UV plane (h/2 rows, starts after Y plane)
+            IntPtr uvPtr = IntPtr.Add(mapped.DataPointer, yPitch * h);
+            for (int y = 0; y < h / 2; y++)
+                Marshal.Copy(IntPtr.Add(uvPtr, y * yPitch), bytes, ySize + y * w, w);
+            return bytes;
+        }
+        finally { _context.Unmap(staging, 0); }
     }
 
     /// <summary>渲染单帧到 R8G8B8A8 RenderTarget 并回读 RGBA 字节（行优先）。
@@ -394,7 +446,10 @@ public sealed class EquirectPipeline : IDisposable
     public void Dispose()
     {
         _asteroidPs.Dispose();
+        _ccPsUv.Dispose();
+        _ccPsY.Dispose();
         _ccPs.Dispose();
+        _device1?.Dispose();
         _ccVs.Dispose();
         _rasterizerState.Dispose();
         _inputLayout.Dispose();
