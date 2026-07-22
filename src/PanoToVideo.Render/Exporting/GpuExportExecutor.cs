@@ -46,23 +46,31 @@ public sealed class GpuExportExecutor : IExportExecutor
             // 确保临时文件目录存在（MFCreateSinkWriterFromURL 要求路径可写）
             Directory.CreateDirectory(Path.GetDirectoryName(tmpPath)!);
 
+            var tProbe = System.Diagnostics.Stopwatch.StartNew();
             // 1. DeviceProbe 选首选设备
             using var probe = new DeviceProbeImpl();
             var probeResult = probe.Probe();
             _device = probeResult.Preferred ?? throw new InvalidOperationException("无合格 GPU 设备");
+            tProbe.Stop();
 
             // 2. 创建 D3D11 设备
+            var tDev = System.Diagnostics.Stopwatch.StartNew();
             FeatureLevel[] levels = [FeatureLevel.Level_11_1, FeatureLevel.Level_11_0];
             D3D11CreateDevice(_device.Adapter, DriverType.Unknown, DeviceCreationFlags.BgraSupport,
                 levels, out ID3D11Device device, out _, out _).CheckError();
+            tDev.Stop();
             using (device)
             {
                 using var pipeline = new EquirectPipeline(device);
+                var tUpload = System.Diagnostics.Stopwatch.StartNew();
                 using var srv = pipeline.UploadErpTexture(_erpRgba, _erpW, _erpH);
+                tUpload.Stop();
 
                 // 3. H.264 编码器（零拷贝）
+                var tEncInit = System.Diagnostics.Stopwatch.StartNew();
                 using var encoder = new MfH264Encoder(device, tmpPath,
                     parameters.Width, parameters.Height, parameters.Fps, _bitrate);
+                tEncInit.Stop();
 
                 // 4. 逐帧：YawSchedule -> RenderFrameToNv12(投影+颜色转换) -> 零拷贝编码
                 // 分阶段计时：投影段(含颜色转换,GPU管线) vs 编码段(SubmitFrame)，非伪造串行
@@ -91,7 +99,13 @@ public sealed class GpuExportExecutor : IExportExecutor
                         encSec > 0 ? (i + 1) / encSec : 0,
                         sw.Elapsed));
                 }
+                var tFinalize = System.Diagnostics.Stopwatch.StartNew();
                 encoder.Finalize();
+                tFinalize.Stop();
+
+                Console.WriteLine($"[诊断] DeviceProbe={tProbe.Elapsed.TotalSeconds:F2}s CreateDevice={tDev.Elapsed.TotalSeconds:F2}s Upload={tUpload.Elapsed.TotalSeconds:F2}s EncInit={tEncInit.Elapsed.TotalSeconds:F2}s");
+                Console.WriteLine($"[诊断] 逐帧: 投影{projSec:F2}s 编码{encSec:F2}s Finalize={tFinalize.Elapsed.TotalSeconds:F2}s (总{totalFrames}帧)");
+                Console.WriteLine($"[诊断] 投影FPS={totalFrames / projSec:F0} 编码FPS={totalFrames / encSec:F0}");
             }
             sw.Stop();
             double avgFps = totalFrames > 0 ? totalFrames / sw.Elapsed.TotalSeconds : 0;

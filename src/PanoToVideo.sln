@@ -13,6 +13,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PanoToVideo.Tests", "PanoTo
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PanoToVideo.SmokeProbe", "PanoToVideo.SmokeProbe\PanoToVideo.SmokeProbe.csproj", "{DC6D7CF1-2AE4-466E-A4E8-96A07F6E2661}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PanoToVideo.Benchmark", "PanoToVideo.Benchmark\PanoToVideo.Benchmark.csproj", "{860FE757-9C82-417D-86B0-2CCEC229B689}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -42,5 +44,9 @@ Global
 		{DC6D7CF1-2AE4-466E-A4E8-96A07F6E2661}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{DC6D7CF1-2AE4-466E-A4E8-96A07F6E2661}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{DC6D7CF1-2AE4-466E-A4E8-96A07F6E2661}.Release|Any CPU.Build.0 = Release|Any CPU
+		{860FE757-9C82-417D-86B0-2CCEC229B689}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{860FE757-9C82-417D-86B0-2CCEC229B689}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{860FE757-9C82-417D-86B0-2CCEC229B689}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{860FE757-9C82-417D-86B0-2CCEC229B689}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal
