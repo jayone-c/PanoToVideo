@@ -1,12 +1,74 @@
-﻿<Window x:Class="PanoToVideo.App.MainWindow"
+<Window x:Class="PanoToVideo.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
-        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        xmlns:local="clr-namespace:PanoToVideo.App"
-        mc:Ignorable="d"
-        Title="MainWindow" Height="450" Width="800">
-    <Grid>
+        Title="全景图转短视频" Height="720" Width="640"
+        WindowStartupLocation="CenterScreen">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
 
+        <!-- 文件输入 -->
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
+            <Button Content="选择图片" Command="{Binding BrowseCommand}" Width="80" Margin="0,0,8,0"/>
+            <TextBlock Text="{Binding SelectedFilePath, TargetNullValue=未选择}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Width="500"/>
+        </StackPanel>
+
+        <!-- 参数面板 -->
+        <GroupBox Grid.Row="1" Header="参数" Margin="0,0,0,8">
+            <Grid Margin="4">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/>
+                </Grid.RowDefinitions>
+                <TextBlock Grid.Row="0" Grid.Column="0" Text="时长(秒)" VerticalAlignment="Center"/>
+                <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding DurationSeconds}" Margin="4"/>
+                <TextBlock Grid.Row="0" Grid.Column="2" Text="旋转度数" VerticalAlignment="Center"/>
+                <TextBox Grid.Row="0" Grid.Column="3" Text="{Binding RotationDegrees}" Margin="4"/>
+                <TextBlock Grid.Row="1" Grid.Column="0" Text="FPS" VerticalAlignment="Center"/>
+                <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding Fps}" Margin="4"/>
+                <TextBlock Grid.Row="1" Grid.Column="2" Text="FOV" VerticalAlignment="Center"/>
+                <TextBox Grid.Row="1" Grid.Column="3" Text="{Binding HorizontalFov}" Margin="4"/>
+                <TextBlock Grid.Row="2" Grid.Column="0" Text="宽" VerticalAlignment="Center"/>
+                <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding Width}" Margin="4"/>
+                <TextBlock Grid.Row="2" Grid.Column="2" Text="高" VerticalAlignment="Center"/>
+                <TextBox Grid.Row="2" Grid.Column="3" Text="{Binding Height}" Margin="4"/>
+                <TextBlock Grid.Row="3" Grid.Column="0" Text="俯仰角" VerticalAlignment="Center"/>
+                <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding Pitch}" Margin="4"/>
+                <TextBlock Grid.Row="3" Grid.Column="2" Text="方向" VerticalAlignment="Center"/>
+                <ComboBox Grid.Row="3" Grid.Column="3" SelectedItem="{Binding Direction}" Margin="4"/>
+                <TextBlock Grid.Row="4" Grid.Column="0" Text="预设" VerticalAlignment="Center"/>
+                <ComboBox Grid.Row="4" Grid.Column="1" SelectedItem="{Binding Preset}" Margin="4"/>
+                <CheckBox Grid.Row="4" Grid.Column="2" Grid.ColumnSpan="2" Content="小行星开场" IsChecked="{Binding AsteroidIntro}" Margin="4" VerticalAlignment="Center"/>
+                <TextBlock Grid.Row="5" Grid.Column="0" Grid.ColumnSpan="4" Text="{Binding SeamlessHint}" Foreground="Orange" TextWrapping="Wrap" Margin="4"/>
+            </Grid>
+        </GroupBox>
+
+        <!-- 进度 -->
+        <StackPanel Grid.Row="2" VerticalAlignment="Center">
+            <ProgressBar Value="{Binding ProgressPercent}" Maximum="100" Height="20" Margin="0,4"/>
+            <TextBlock Text="{Binding StatusText}" Margin="0,4" TextWrapping="Wrap"/>
+            <TextBlock Text="{Binding PresetFallbackHint}" Foreground="Orange" TextWrapping="Wrap" Margin="0,4"/>
+        </StackPanel>
+
+        <!-- 设备状态 -->
+        <GroupBox Grid.Row="3" Header="硬件状态" Margin="0,8,0,8">
+            <TextBlock Text="{Binding DeviceInfo}" Margin="4" TextWrapping="Wrap"/>
+        </GroupBox>
+
+        <!-- 按钮 -->
+        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Center">
+            <Button Content="导出" Command="{Binding ExportCommand}" Width="100" Height="32" Margin="0,0,12,0"/>
+            <Button Content="取消" Command="{Binding CancelCommand}" Width="100" Height="32"/>
+        </StackPanel>
     </Grid>
 </Window>
