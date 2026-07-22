@@ -1,0 +1,87 @@
+=== 阶段1 · DeviceProbe 真实化验证 (ADR Q4) ===
+合格设备数: 4
+  - NVIDIA GeForce RTX 4090 D  VRAM=24148MB  Luid=0x00000000000179BF  编码器=NVIDIA H.264 Encoder MFT
+  - AMD Radeon(TM) Graphics  VRAM=467MB  Luid=0x00000000000194E5  编码器=NVIDIA H.264 Encoder MFT
+  - NVIDIA GeForce RTX 4090 D  VRAM=24148MB  Luid=0x000000000002BD9E  编码器=NVIDIA H.264 Encoder MFT
+  - NVIDIA GeForce RTX 4090 D  VRAM=24148MB  Luid=0x0000000000029381  编码器=NVIDIA H.264 Encoder MFT
+
+首选设备: NVIDIA GeForce RTX 4090 D  Luid=0x00000000000179BF  编码器=NVIDIA H.264 Encoder MFT
+[阶段3] H.265 硬件编码器: 可用
+[阶段3] 体积优先(H.265)预设 -> Size  无退回
+D3D11 设备创建成功，FeatureLevel=Level_11_1
+
+[ADR Q1] MF 设备挂载: 成功  Token=41094890  
+[ADR Q1] H.264 硬件编码器数量: 3
+
+[ADR Q3] BGRA->NV12 Rec.709 limited 颜色转换:
+  白: Y=235(期235) Cb=128(期128) Cr=128(期128) OK
+  红: Y=63(期63) Cb=102(期102) Cr=240(期240) OK
+  绿: Y=173(期173) Cb=42(期42) Cr=26(期26) OK
+  蓝: Y=32(期32) Cb=240(期240) Cr=118(期118) OK
+[ADR Q3] 颜色转换: 通过
+
+[ADR Q2] NV12 平面纹理 RTV + 零拷贝 buffer:
+  NV12平面RTV: Y[0]=235(期235) UV.Cb=128(期128) UV.Cr=128(期128) OK
+  MFCreateDXGISurfaceBuffer零拷贝: 成功 
+
+[ADR Q2] 端到端零拷贝编码:
+  编码完成: 30帧 -> D:\work\720-to-video\smoke_output.mp4 (428331 字节)
+  Q2端到端: 成功
+
+视角      GPU-vs-py360convert    GPU-vs-Core
+--------------------------------------------------
+yaw=  0 p=  0      51.42 dB            51.42 dB   PASS
+yaw= 90 p=  0      54.02 dB            54.02 dB   PASS
+yaw=180 p=  0      49.87 dB            49.87 dB   PASS
+yaw=270 p=  0      51.54 dB            51.54 dB   PASS
+yaw=  0 p= 30      52.74 dB            52.74 dB   PASS
+yaw=  0 p=-30      50.92 dB            50.92 dB   PASS
+yaw= 45 p= 15      53.02 dB            53.02 dB   PASS
+
+结论: GPU shader 几何全部通过 (PSNR ≥ 40dB vs py360convert)
+
+=== 阶段1 · 单图导出全链路 ===
+[诊断] DeviceProbe=0.17s CreateDevice=0.01s Upload=0.02s EncInit=0.00s
+[诊断] 逐帧: 投影0.02s 编码0.00s Finalize=1.31s (总180帧)
+[诊断] 投影FPS=7269 编码FPS=279894
+导出结果: 成功
+  输出: D:\work\720-to-video\smoke_exports\exports\scene_equirectangular_8192x4096_1080x1920_3s_360deg.mp4
+  大小: 6388628 字节
+  耗时: 1.59s  平均FPS: 113.8
+  设备: NVIDIA GeForce RTX 4090 D  编码器: NVIDIA H.264 Encoder MFT
+  ffprobe:
+    codec_name=h264
+    codec_type=video
+    width=1080
+    height=1920
+    r_frame_rate=60/1
+    duration=2.999983
+    nb_frames=180
+  ffprobe校验: 通过(H.264/1080x1920/60FPS/无音频)
+
+=== 阶段3 · 小行星开场 ===
+  关闭(透视)非零像素 101659; 启用(小行星)非零 102389
+  关闭(透视) vs 启用(小行星) PSNR=10.24dB (应较低=不同投影)
+  过渡末(weight=0.000) vs 纯透视 PSNR=100.00dB (应高=无突跳)
+  结论: 小行星开/关行为符合预期(第0帧不同投影,过渡末无突跳)
+
+=== 优化3 · 小行星开场视觉验证 ===
+  小行星视频导出: scene_640x640_2s_360deg.mp4
+  抽帧完成: D:\work\720-to-video\asteroid_vis/frame0_pureAsteroid.png(纯小行星) frame24.png(过渡中) frame48.png(过渡末) frame72.png(透视旋转)
+  人工确认: 第0帧应是小行星投影(底部极点俯视little planet), 第72帧应是正常透视旋转, 过渡连续无突跳
+
+=== 阶段1 · 360° 首尾一致性 ===
+  编码前: 首帧Yaw=0.0° 末帧Yaw=358.0° (无缝循环末帧非首帧避免停顿)
+  编码后首末帧PSNR: 16.08dB (无几何跳变)
+
+=== 阶段2 · 批量队列验收 ===
+批量完成: 100项, 耗时27.68s (平均0.28s/项)
+
+验收:
+  完成: 99/100  失败: 1/100
+  失败项(应仅第50项): FAIL_item50_corrupt.jpg -> ERP 校验失败: 图像宽度 0 超出支持范围 [6000, 16384]
+  命名唯一(99个完成项重名递增不覆盖): True (共99个)
+  单项失败不阻塞(失败项后继续): True
+  首项进度: 投影FPS=7707 编码FPS=2343
+  结论: 100项批量验收通过
+  ffprobe首项: codec_name=h264 width=640 height=640 r_frame_rate=60/1
