@@ -13,16 +13,25 @@ using Vortice.Direct3D11;
 using static Vortice.Direct3D11.D3D11;
 
 // ===== 阶段4 · RTX 4090 D 性能基准验收（PRD 成功标准2，Q5）=====
-// 基准任务：7680×3840 -> 1080×1920、30秒、60FPS、360°、75°FOV、H.264
+// 基准任务：输入ERP -> 1080×1920、30秒、60FPS、360°、75°FOV、H.264
 // 验收：端到端 ≥60 输出 FPS（纯渲染 ≤30 秒），日志证明投影与编码实际设备。
+// 用法：dotnet run -c Release [7680|xuanguan1|chashi]  默认 7680
 
-Console.WriteLine("=== 阶段4 · RTX 4090 D 性能基准验收 ===");
+string imageArg = args.Length > 0 ? args[0] : "7680";
 string repoRoot = FindRepoRoot();
+string erpPath = imageArg switch
+{
+    "xuanguan1" => Path.Combine(repoRoot, "720", "玄关1.jpg"),
+    "chashi" => Path.Combine(repoRoot, "720", "茶室空间.jpg"),
+    _ => Path.Combine(repoRoot, "tests", "fixtures", "erp_7680x3840.jpg"),
+};
+string imageLabel = imageArg == "7680" ? "7680x3840(缩放)" : $"{imageArg}(6000x3000真实)";
 
-// 1. 解码 7680×3840 ERP
-Console.WriteLine("1. 解码 7680x3840 ERP...");
+Console.WriteLine($"=== 阶段4 · RTX 4090 D 性能基准验收 [{imageLabel}] ===");
+
+// 1. 解码 ERP
+Console.WriteLine($"1. 解码 {imageLabel}...");
 var decodeSw = Stopwatch.StartNew();
-var erpPath = Path.Combine(repoRoot, "tests", "fixtures", "erp_7680x3840.jpg");
 var (erpRgba, erpW, erpH) = DecodeImage(erpPath);
 decodeSw.Stop();
 Console.WriteLine($"   尺寸 {erpW}x{erpH}, 解码耗时 {decodeSw.Elapsed.TotalSeconds:F2}s");
