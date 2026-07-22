@@ -41,9 +41,11 @@ public sealed class MfH264Encoder : IDisposable
         var dxgiManager = MediaFactory.MFCreateDXGIDeviceManager();
         dxgiManager.ResetDevice(device);
 
-        // 2. SinkWriter 属性：挂 DXGI 设备管理器（启用硬件加速零拷贝路径）
+        // 2. SinkWriter 属性：挂 DXGI 设备管理器（启用零拷贝输入路径）
         var sinkAttrs = MediaFactory.MFCreateAttributes(3);
         sinkAttrs.Set(SinkWriterAttributeKeys.D3DManager, dxgiManager);
+        // 注：ReadwriteEnableHardwareTransforms 启用 NVENC 在本机致访问违规崩溃(~300帧后),
+        //     回退软件编码(稳定但 Finalize 串行编码慢)。硬件路径稳定性待排查。
 
         // 3. 输出 MP4 容器
         _sinkWriter = MediaFactory.MFCreateSinkWriterFromURL(outputPath, null, sinkAttrs)

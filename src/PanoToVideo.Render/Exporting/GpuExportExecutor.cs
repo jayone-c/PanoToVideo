@@ -74,6 +74,10 @@ public sealed class GpuExportExecutor : IExportExecutor
 
                 // 4. 逐帧：YawSchedule -> RenderFrameToNv12(投影+颜色转换) -> 零拷贝编码
                 // 分阶段计时：投影段(含颜色转换,GPU管线) vs 编码段(SubmitFrame)，非伪造串行
+                // 纹理池：MFCreateDXGISurfaceBuffer 零拷贝包裹后，硬件编码器异步引用纹理，
+                // 不能每帧立即 Dispose（致访问违规）。保留 N 帧延迟释放，让 MF 消化完。
+                const int PoolSize = 4;
+                var nv12Pool = new ID3D11Texture2D[PoolSize];
                 double projSec = 0, encSec = 0;
                 for (int i = 0; i < totalFrames; i++)
                 {
@@ -82,7 +86,7 @@ public sealed class GpuExportExecutor : IExportExecutor
                     double yaw = YawSchedule.YawAt(i, totalFrames, parameters.RotationDegrees, parameters.Direction);
 
                     var ps = System.Diagnostics.Stopwatch.StartNew();
-                    using var nv12 = pipeline.RenderFrameToNv12(srv, _erpW, _erpH,
+                    var nv12 = pipeline.RenderFrameToNv12(srv, _erpW, _erpH,
                         parameters.Width, parameters.Height, parameters.HorizontalFov, yaw, parameters.Pitch);
                     ps.Stop();
                     projSec += ps.Elapsed.TotalSeconds;
@@ -92,6 +96,10 @@ public sealed class GpuExportExecutor : IExportExecutor
                     es.Stop();
                     encSec += es.Elapsed.TotalSeconds;
 
+                    int slot = i % PoolSize;
+                    if (nv12Pool[slot] != null) nv12Pool[slot].Dispose();
+                    nv12Pool[slot] = nv12;
+
                     // 逐帧进度上报（投影FPS / 编码FPS，分阶段）
                     progress?.Report(new ExportProgress(
                         i, totalFrames,
@@ -99,7 +107,9 @@ public sealed class GpuExportExecutor : IExportExecutor
                         encSec > 0 ? (i + 1) / encSec : 0,
                         sw.Elapsed));
                 }
+                // 释放纹理池（Finalize 前 MF 应已消化）
                 var tFinalize = System.Diagnostics.Stopwatch.StartNew();
+                foreach (var t in nv12Pool) t?.Dispose();
                 encoder.Finalize();
                 tFinalize.Stop();
 
