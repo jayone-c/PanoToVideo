@@ -18,6 +18,11 @@ artifacts/
 *.tmp.mp4
 **/exports/
 smoke_output.mp4
+benchmark_exports/
+smoke_batch/
+
+## 发布产物（保留 README 与许可文件，排除二进制 app/）
+dist/app/
 
 ## IDE
 .idea/
