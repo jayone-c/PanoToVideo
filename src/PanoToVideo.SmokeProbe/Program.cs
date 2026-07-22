@@ -359,49 +359,70 @@ Console.WriteLine("\n=== 阶段2 · 批量队列验收 ===");
         erpRgba[i * 4 + 3] = 255;
     }
 
-    // 5 项队列（模拟多图，缩短参数省时：1秒60FPS=60帧，640×640）
+    // 100 项队列（PRD门槛3：≥100图批量，2张真实图循环50次模拟，规划§9允许循环）
+    // 注入1个故意失败项（第50项，损坏图）验证"单项失败不阻塞队列"
     var batchParams = new RenderParameters(1, 360, 60, 75.0, 640, 640, 0.0,
         RotationDirection.Clockwise, false);
     var items = new List<QueueItem>();
-    for (int i = 0; i < 5; i++)
-        items.Add(new QueueItem($"scene{i}_equirectangular_8192x4096.jpg", erpW, erpH));
+    for (int i = 0; i < 100; i++)
+    {
+        // 第50项标记损坏（size=0），erpLoader 返回空数据致校验失败
+        bool isFailItem = i == 50;
+        string name = isFailItem
+            ? $"FAIL_item50_corrupt.jpg"
+            : $"{(i % 2 == 0 ? "玄关1" : "茶室空间")}_{i}_equirectangular_6000x3000.jpg";
+        items.Add(new QueueItem(name, isFailItem ? 0 : 6000, isFailItem ? 0 : 3000));
+    }
 
     string batchDir = Path.Combine(repoRoot, "smoke_batch");
     if (Directory.Exists(batchDir)) Directory.Delete(batchDir, true);
     Directory.CreateDirectory(batchDir);
     long avail = new DriveInfo(Path.GetPathRoot(batchDir)!).AvailableFreeSpace;
 
-    // executorFactory: 每项创建 GpuExportExecutor（共享同一 ERP RGBA）
+    // erpLoader: 失败项返回 size=0 空数据致 EquirectValidator 拒绝；正常项用真实图 RGBA
+    var xuanRgba = LoadJpegRgba(Path.Combine(repoRoot, "720", "玄关1.jpg")).Rgba;
+    var chaRgba = LoadJpegRgba(Path.Combine(repoRoot, "720", "茶室空间.jpg")).Rgba;
     var scheduler = new SerialBatchScheduler(
-        executorFactory: (item, rgba, w, h) => new GpuExportExecutor(rgba, w, h, batchParams, ExportPreset.Compatibility),
-        erpLoader: item => (erpRgba, erpW, erpH));
+        executorFactory: (item, rgba, w, h) => new FfmpegNvencExecutor(rgba, w, h, batchParams, ExportPreset.Compatibility),
+        erpLoader: item =>
+        {
+            if (item.SourceFileName.Contains("FAIL"))
+                return (Rgba: Array.Empty<byte>(), W: 0, H: 0);
+            if (item.SourceFileName.Contains("玄关1"))
+                return (Rgba: xuanRgba, W: 6000, H: 3000);
+            return (Rgba: chaRgba, W: 6000, H: 3000);
+        });
 
     var sw = Stopwatch.StartNew();
     await scheduler.RunAsync(items, batchParams, ExportPreset.Compatibility, batchDir, avail, default);
     sw.Stop();
 
-    Console.WriteLine($"批量完成: {items.Count}项, 耗时{sw.Elapsed.TotalSeconds:F2}s");
-    foreach (var item in items)
-        Console.WriteLine($"  {item.SourceFileName}: {item.Status} 输出={Path.GetFileName(item.OutputPath ?? "(无)")} FPS={item.AverageFps:F0} 错误={item.ErrorMessage ?? "无"}");
+    Console.WriteLine($"批量完成: {items.Count}项, 耗时{sw.Elapsed.TotalSeconds:F2}s (平均{sw.Elapsed.TotalSeconds/items.Count:F2}s/项)");
 
-    // 验收：全部完成、命名递增、日志设备证明
+    // 100项摘要（不逐项打印）
     int completed = items.Count(i => i.Status == TaskStatus.Completed);
+    int failed = items.Count(i => i.Status == TaskStatus.Failed);
     Console.WriteLine($"\n验收:");
-    Console.WriteLine($"  完成数: {completed}/{items.Count}");
+    Console.WriteLine($"  完成: {completed}/100  失败: {failed}/100");
+    var failItem = items.FirstOrDefault(i => i.Status == TaskStatus.Failed);
+    Console.WriteLine($"  失败项(应仅第50项): {(failItem == null ? "无" : failItem.SourceFileName + " -> " + failItem.ErrorMessage)}");
+    // 单项失败不阻塞：失败项后续(第51项)应完成
+    bool noBlock = items.Count == 100 && completed == 99 && failed == 1
+        && items[50].Status == TaskStatus.Failed && items[51].Status == TaskStatus.Completed;
+    // 命名唯一（99个完成项文件名不重复）
     var outputs = items.Where(i => i.OutputPath != null).Select(i => Path.GetFileName(i.OutputPath!)).ToList();
-    Console.WriteLine($"  输出文件: {string.Join(", ", outputs)}");
-    // 5项同名应递增 _0.._4? 实际重名递增：首项无后缀，后续 _1.._4
-    bool namingOk = outputs.Count == 5 && outputs.Distinct().Count() == 5;
-    Console.WriteLine($"  命名唯一(重名递增不覆盖): {namingOk}");
-    Console.WriteLine($"  首项进度上报: 投影FPS={items[0].Progress.ProjectionFps:F0} 编码FPS={items[0].Progress.EncodingFps:F0} 总帧={items[0].Progress.TotalFrames}");
-    Console.WriteLine($"  结论: {(completed == 5 && namingOk ? "批量队列验收通过" : "存在问题")}");
+    bool namingOk = outputs.Count == outputs.Distinct().Count();
+    Console.WriteLine($"  命名唯一(99个完成项重名递增不覆盖): {namingOk} (共{outputs.Count}个)");
+    Console.WriteLine($"  单项失败不阻塞(失败项后继续): {noBlock}");
+    Console.WriteLine($"  首项进度: 投影FPS={items[0].Progress.ProjectionFps:F0} 编码FPS={items[0].Progress.EncodingFps:F0}");
+    Console.WriteLine($"  结论: {(noBlock && namingOk ? "100项批量验收通过" : "存在问题")}");
 
-    // ffprobe 抽检首项
+    // ffprobe 抽检首项与末项（证明日志设备与编码）
     if (items[0].OutputPath != null)
     {
         var psi = new ProcessStartInfo("ffprobe",
             $"-v error -show_entries stream=codec_name,width,height,r_frame_rate -of default=noprint_wrappers=1 \"{items[0].OutputPath}\"")
-        { RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
+        { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
         var p = Process.Start(psi)!;
         var o = p.StandardOutput.ReadToEnd(); p.WaitForExit();
         Console.WriteLine($"  ffprobe首项: {o.Trim().Replace("\n", " ")}");
@@ -430,6 +451,32 @@ static double PsnrRgb(byte[] rgba, byte[] rgb)
     }
     double mse = sq / (n * 3);
     return mse < 1e-10 ? 100.0 : 10.0 * Math.Log10(255.0 * 255.0 / mse);
+}
+
+static (byte[] Rgba, int W, int H) LoadJpegRgba(string path)
+{
+    using var bmp = new System.Drawing.Bitmap(path);
+    int w = bmp.Width, h = bmp.Height;
+    var data = bmp.LockBits(new System.Drawing.Rectangle(0, 0, w, h),
+        System.Drawing.Imaging.ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppRgb);
+    try
+    {
+        var rgba = new byte[w * h * 4];
+        for (int y = 0; y < h; y++)
+        {
+            var row = new byte[w * 4];
+            Marshal.Copy(IntPtr.Add(data.Scan0, y * data.Stride), row, 0, w * 4);
+            for (int x = 0; x < w; x++)
+            {
+                rgba[(y * w + x) * 4] = row[x * 4 + 2];
+                rgba[(y * w + x) * 4 + 1] = row[x * 4 + 1];
+                rgba[(y * w + x) * 4 + 2] = row[x * 4];
+                rgba[(y * w + x) * 4 + 3] = 255;
+            }
+        }
+        return (rgba, w, h);
+    }
+    finally { bmp.UnlockBits(data); }
 }
 
 static int CountNonZero(byte[] rgba)
