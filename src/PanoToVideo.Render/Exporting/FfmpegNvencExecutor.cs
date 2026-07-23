@@ -73,6 +73,7 @@ public sealed class FfmpegNvencExecutor : IExportExecutor
                 };
                 var ff = Process.Start(ffmpeg) ?? throw new InvalidOperationException("FFmpeg 启动失败");
                 string? ffErr = null;
+                int ffExitCode = -1; // finally Dispose 前记录（H1）
                 // H2 修复：异步读 stderr 避免管道死锁（同步 ReadToEnd 会因 stderr 缓冲满阻塞 FFmpeg 读 stdin）
                 var errTask = Task.Run(() => ff.StandardError.ReadToEnd());
                 try
@@ -113,6 +114,7 @@ public sealed class FfmpegNvencExecutor : IExportExecutor
                     ff.StandardInput.Close();
                     ff.WaitForExit();
                     ffErr = errTask.IsCompleted ? errTask.Result : "";
+                    ffExitCode = ff.ExitCode; // finally Dispose 前记录
                 }
                 finally
                 {
@@ -122,8 +124,8 @@ public sealed class FfmpegNvencExecutor : IExportExecutor
                     try { ff.WaitForExit(2000); } catch { }
                     ff.Dispose();
                 }
-                if (ff.ExitCode != 0)
-                    throw new InvalidOperationException($"FFmpeg 退出码 {ff.ExitCode}: {ffErr}");
+                if (ffExitCode != 0)
+                    throw new InvalidOperationException($"FFmpeg 退出码 {ffExitCode}: {ffErr}");
             }
             sw.Stop();
             double avgFps = totalFrames / sw.Elapsed.TotalSeconds;
