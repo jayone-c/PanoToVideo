@@ -24,6 +24,7 @@ public sealed class EquirectPipeline : IDisposable
     private readonly ID3D11VertexShader _vs;
     private readonly ID3D11PixelShader _ps;
     private readonly ID3D11SamplerState _sampler;
+    private readonly ID3D11SamplerState _colorConvertSampler; // M2: 独立 Clamp sampler，BGRA 不环绕
     private readonly ID3D11Buffer _paramsBuffer;
     private readonly ID3D11Buffer _vertexBuffer;
     private readonly ID3D11InputLayout _inputLayout;
@@ -64,6 +65,17 @@ public sealed class EquirectPipeline : IDisposable
             Filter = Filter.MinMagMipLinear,
             AddressU = TextureAddressMode.Wrap,   // 经度环绕
             AddressV = TextureAddressMode.Clamp,  // 纬度钳制
+            AddressW = TextureAddressMode.Clamp,
+            MinLOD = 0,
+            MaxLOD = float.MaxValue,
+        });
+
+        // M2: colorconvert 用独立 Clamp sampler（BGRA 是普通 2D 纹理，不应环绕）
+        _colorConvertSampler = device.CreateSamplerState(new SamplerDescription
+        {
+            Filter = Filter.MinMagMipLinear,
+            AddressU = TextureAddressMode.Clamp,
+            AddressV = TextureAddressMode.Clamp,
             AddressW = TextureAddressMode.Clamp,
             MinLOD = 0,
             MaxLOD = float.MaxValue,
@@ -185,7 +197,7 @@ public sealed class EquirectPipeline : IDisposable
         _context.VSSetShader(_ccVs);
         _context.PSSetShader(_ccPs);
         _context.PSSetShaderResources(0, new[] { bgraSrv });
-        _context.PSSetSamplers(0, new[] { _sampler });
+        _context.PSSetSamplers(0, new[] { _colorConvertSampler }); // M2: BGRA 不环绕
         _context.PSSetConstantBuffers(0, new[] { _paramsBuffer });
         _context.Draw(3, 0);
 
@@ -308,14 +320,14 @@ public sealed class EquirectPipeline : IDisposable
         _context.VSSetShader(_ccVs);
         _context.PSSetShader(_ccPsY);
         _context.PSSetShaderResources(0, new[] { bgraSrv });
-        _context.PSSetSamplers(0, new[] { _sampler });
+        _context.PSSetSamplers(0, new[] { _colorConvertSampler }); // M2: BGRA 不环绕
         _context.PSSetConstantBuffers(0, new[] { _paramsBuffer });
         _context.Draw(3, 0);
 
-        // Draw UV：半高视口（outH/2），PS=PSUv（2x2 色度下采样）
+        // Draw UV：半高半宽视口（M1: outW/2, outH/2），PS=PSUv（2x2 色度下采样）
         _context.ClearRenderTargetView(uvRtv, new Color4(0, 0, 0, 1));
         _context.OMSetRenderTargets(new[] { uvRtv }, null);
-        _context.RSSetViewport(new Viewport(outW, outH / 2f));
+        _context.RSSetViewport(new Viewport(outW / 2f, outH / 2f));
         _context.PSSetShader(_ccPsUv);
         _context.Draw(3, 0);
 
@@ -457,6 +469,7 @@ public sealed class EquirectPipeline : IDisposable
         _vertexBuffer.Dispose();
         _paramsBuffer.Dispose();
         _sampler.Dispose();
+        _colorConvertSampler.Dispose();
         _ps.Dispose();
         _vs.Dispose();
     }

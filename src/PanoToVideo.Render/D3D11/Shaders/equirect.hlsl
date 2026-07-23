@@ -67,7 +67,9 @@ float4 PSMain(VSOutput input) : SV_Target
 
     float lon = atan2(wx, wz);
     float len = sqrt(wx * wx + wy * wy + wz * wz);
-    float lat = asin(wy / len);
+    // M3 fix: clamp to [-1,1] to avoid NaN from asin when floating-point error
+    // makes wy/len slightly exceed +/-1 (e.g. pitch near +/-90 degrees)
+    float lat = asin(clamp(wy / len, -1.0, 1.0));
 
     // ERP tex coord: u wraps (longitude), v=0 = north pole top row
     float u = lon / (2.0 * PI) + 0.5;
