@@ -73,6 +73,8 @@ public sealed class FfmpegNvencExecutor : IExportExecutor
                 };
                 var ff = Process.Start(ffmpeg) ?? throw new InvalidOperationException("FFmpeg 启动失败");
                 string? ffErr = null;
+                // H2 修复：异步读 stderr 避免管道死锁（同步 ReadToEnd 会因 stderr 缓冲满阻塞 FFmpeg 读 stdin）
+                var errTask = Task.Run(() => ff.StandardError.ReadToEnd());
                 try
                 {
                     // 4. 逐帧：GPU 投影 NV12 -> 回读 -> 管道喂 FFmpeg
@@ -81,6 +83,12 @@ public sealed class FfmpegNvencExecutor : IExportExecutor
                     for (int i = 0; i < totalFrames; i++)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
+                        // FFmpeg 提前崩溃（管道断裂）则退出
+                        if (ff.HasExited)
+                        {
+                            var err = errTask.IsCompleted ? errTask.Result : "";
+                            throw new InvalidOperationException($"FFmpeg 提前退出（码 {ff.ExitCode}）: {err}");
+                        }
                         double yaw = YawSchedule.YawAt(i, totalFrames, parameters.RotationDegrees, parameters.Direction);
 
                         var ps = Stopwatch.StartNew();
@@ -103,12 +111,16 @@ public sealed class FfmpegNvencExecutor : IExportExecutor
                             sw.Elapsed));
                     }
                     ff.StandardInput.Close();
-                    ffErr = ff.StandardError.ReadToEnd();
                     ff.WaitForExit();
+                    ffErr = errTask.IsCompleted ? errTask.Result : "";
                 }
                 finally
                 {
+                    // H1 修复：异常/取消路径确保 FFmpeg 进程被 Kill + 等待 + 释放句柄
                     try { ff.StandardInput?.Close(); } catch { }
+                    try { if (!ff.HasExited) ff.Kill(entireProcessTree: true); } catch { }
+                    try { ff.WaitForExit(2000); } catch { }
+                    ff.Dispose();
                 }
                 if (ff.ExitCode != 0)
                     throw new InvalidOperationException($"FFmpeg 退出码 {ff.ExitCode}: {ffErr}");
@@ -153,8 +165,8 @@ public sealed class FfmpegNvencExecutor : IExportExecutor
     public void AtomicMove(string tmpPath, string finalPath)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(finalPath)!);
-        if (File.Exists(finalPath)) File.Delete(finalPath);
-        File.Move(tmpPath, finalPath);
+        // H13 修复：用 File.Move(overwrite:true) 原子覆盖，避免 Delete 后 Move 前崩溃丢数据
+        File.Move(tmpPath, finalPath, overwrite: true);
     }
 
     public void Cleanup(string tmpPath)

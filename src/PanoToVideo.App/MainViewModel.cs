@@ -40,6 +40,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private int _failedCount;
     private double _totalProgressPercent;
     private SerialBatchScheduler? _scheduler;
+    private PresetResolveResult? _lastPreset; // H9/M15: 缓存首次预设，重试复用保持一致
     private List<QueueItem> _items = new();
 
     public ObservableCollection<QueueItem> QueueItems { get; } = new();
@@ -158,6 +159,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             // 预设退回
             using var hevcProbe = new MfHevcEncoderProbe();
             var presetResult = new PresetResolver(hevcProbe).Resolve(_settings.Preset);
+            _lastPreset = presetResult; // H9/M15: 缓存供重试复用
             PresetFallbackHint = presetResult.FallbackReason ?? "";
 
             // 构建队列项
@@ -166,6 +168,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             {
                 var (rgba, w, h) = DecodeImage(file);
                 var item = new QueueItem(Path.GetFileName(file), w, h);
+                item.PropertyChanged += QueueItem_PropertyChanged; // H11: 桥接进度
                 _items.Add(item);
                 Application.Current.Dispatcher.Invoke(() => QueueItems.Add(item));
             }
@@ -179,7 +182,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                     return DecodeImage(SelectedFiles[idx]);
                 });
 
-            long avail = new DriveInfo(Path.GetPathRoot(OutputDir)!).AvailableFreeSpace;
+            long avail = GetAvailableBytes(OutputDir);
             int totalItems = _items.Count;
 
             await Task.Run(() => _scheduler.RunAsync(_items, _settings.RenderParameters, presetResult.Preset, OutputDir, avail, _cts.Token));
@@ -189,8 +192,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             TotalProgressPercent = 100;
             StatusText = $"完成: {CompletedCount}/{totalItems} 失败:{FailedCount}";
 
-            // 完成后打开输出目录
-            if (FailedCount == 0) OpenOutputDir();
+            // 完成后打开输出目录（仅成功且未取消时）
+            if (FailedCount == 0 && CompletedCount > 0) OpenOutputDir();
         }
         catch (Exception ex)
         {
@@ -207,17 +210,62 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         if (SelectedQueueIndex < 0 || SelectedQueueIndex >= QueueItems.Count) return;
         var item = QueueItems[SelectedQueueIndex];
         if (item.Status != TaskStatus.Failed) return;
+        if (string.IsNullOrEmpty(OutputDir) || _scheduler == null) return;
         IsExporting = true;
+        _cts?.Dispose();
         _cts = new CancellationTokenSource();
         try
         {
-            long avail = new DriveInfo(Path.GetPathRoot(OutputDir!)!).AvailableFreeSpace;
-            await Task.Run(() => _scheduler!.RetryAsync(item, _settings.RenderParameters, ExportPreset.Compatibility, OutputDir!, avail, _cts.Token));
+            // H9/M15: 用缓存的首次预设，与导出保持一致（不硬编码 Compatibility）
+            long avail = GetAvailableBytes(OutputDir);
+            var preset = _lastPreset ?? new PresetResolveResult(_settings.Preset, null);
+            await Task.Run(() => _scheduler!.RetryAsync(item, _settings.RenderParameters, preset.Preset, OutputDir!, avail, _cts.Token));
             CompletedCount = _items.Count(i => i.Status == TaskStatus.Completed);
             FailedCount = _items.Count(i => i.Status == TaskStatus.Failed);
             StatusText = $"重试完成: {item.Status}";
         }
+        catch (Exception ex)
+        {
+            // H9: async void 无 catch 致崩溃，补 catch
+            StatusText = $"重试错误: {ex.GetType().Name}: {ex.Message}";
+        }
         finally { IsExporting = false; }
+    }
+
+    /// <summary>H9: 安全获取可用磁盘空间，UNC/异常路径返回 long.MaxValue 跳过预检</summary>
+    private static long GetAvailableBytes(string dir)
+    {
+        try
+        {
+            var root = Path.GetPathRoot(dir);
+            if (string.IsNullOrEmpty(root)) return long.MaxValue;
+            return new DriveInfo(root).AvailableFreeSpace;
+        }
+        catch { return long.MaxValue; }
+    }
+
+    /// <summary>H11: 当前队列项进度变化时桥接到进度条与状态文本</summary>
+    private void QueueItem_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (sender is not QueueItem item) return;
+        // 只更新当前选中项或处理中项
+        if (SelectedQueueIndex >= 0 && SelectedQueueIndex < QueueItems.Count && QueueItems[SelectedQueueIndex] != item
+            && item.Status != TaskStatus.Processing) return;
+        if (item.Status == TaskStatus.Processing)
+        {
+            Application.Current?.Dispatcher.BeginInvoke(() =>
+            {
+                ProgressFraction = item.Progress.ProgressFraction;
+                StatusText = $"渲染中 {item.Progress.FramesDone}/{item.Progress.TotalFrames}";
+                // 总进度：已完成项 + 当前项分数
+                if (_items.Count > 0)
+                {
+                    double done = _items.Count(i => i.Status == TaskStatus.Completed);
+                    double curFrac = item.Progress.ProgressFraction;
+                    TotalProgressPercent = (done + curFrac) / _items.Count * 100;
+                }
+            });
+        }
     }
 
     private static (byte[] rgba, int w, int h) DecodeImage(string path)
@@ -249,7 +297,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public event PropertyChangedEventHandler? PropertyChanged;
     private void OnPropertyChanged([CallerMemberName] string? name = null) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
-    public void Dispose() => _cts?.Dispose();
+    public void Dispose()
+    {
+        // H10: 关窗先取消进行中的导出，避免后台 Task 访问已 Dispose 的 _cts
+        try { _cts?.Cancel(); } catch { }
+        _cts?.Dispose();
+    }
 }
 
 public sealed class RelayCommand : System.Windows.Input.ICommand

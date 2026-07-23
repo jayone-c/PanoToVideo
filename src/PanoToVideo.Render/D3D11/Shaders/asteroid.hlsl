@@ -66,9 +66,12 @@ float4 PSMain(VSOut input) : SV_Target
     float yNdc = 1.0 - py / (g_outH - 1.0) * 2.0;
 
     // blend directions by asteroid weight, then sample
+    // H8 fix: weight=0.5 center dirPersp=(0,0,1) and dirAst=(0,0,-1) lerp to zero vector,
+    // normalize yields NaN. Fall back to perspective dir when blended length near zero.
     float3 dirPersp = perspectiveDir(float2(xNdc, yNdc));
     float3 dirAst = asteroidDir(float2(xNdc, yNdc));
-    float3 dir = normalize(lerp(dirPersp, dirAst, g_asteroidWeight));
+    float3 blended = lerp(dirPersp, dirAst, g_asteroidWeight);
+    float3 dir = length(blended) < 1e-6 ? dirPersp : normalize(blended);
 
     float lon = atan2(dir.x, dir.z);
     float lat = asin(dir.y);

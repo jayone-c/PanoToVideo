@@ -136,8 +136,8 @@ public sealed class GpuExportExecutor : IExportExecutor
     public void AtomicMove(string tmpPath, string finalPath)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(finalPath)!);
-        if (File.Exists(finalPath)) File.Delete(finalPath);
-        File.Move(tmpPath, finalPath);
+        // H13 修复：原子覆盖
+        File.Move(tmpPath, finalPath, overwrite: true);
     }
 
     public void Cleanup(string tmpPath)

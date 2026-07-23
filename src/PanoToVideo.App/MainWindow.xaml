@@ -95,7 +95,7 @@
             <GroupBox Grid.Column="2" Header="详情" Margin="4,0,0,0">
                 <StackPanel Margin="4">
                     <TextBlock Text="当前任务" FontWeight="Bold" Margin="0,0,0,4"/>
-                    <ProgressBar Value="{Binding ProgressPercent}" Maximum="100" Height="20" Margin="0,4"/>
+                    <ProgressBar Value="{Binding ProgressPercent, Mode=OneWay}" Maximum="100" Height="20" Margin="0,4"/>
                     <TextBlock Text="{Binding StatusText}" TextWrapping="Wrap" Margin="0,4"/>
                     <TextBlock Text="{Binding PresetFallbackHint}" Foreground="Orange" TextWrapping="Wrap" Margin="0,4"/>
                     <TextBlock Text="设备" FontWeight="Bold" Margin="0,8,0,4"/>
@@ -119,7 +119,7 @@
             <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
                 <TextBlock Text="{Binding CompletedCount, StringFormat=完成:{0}}" Margin="0,0,16,0"/>
                 <TextBlock Text="{Binding FailedCount, StringFormat=失败:{0}}" Margin="0,0,16,0"/>
-                <ProgressBar Value="{Binding TotalProgressPercent}" Maximum="100" Width="300" Height="16"/>
+                <ProgressBar Value="{Binding TotalProgressPercent, Mode=OneWay}" Maximum="100" Width="300" Height="16"/>
                 <TextBlock Text="{Binding TotalProgressPercent, StringFormat={}{0:F0}%}" Margin="8,0,0,0" VerticalAlignment="Center"/>
             </StackPanel>
             <Button Grid.Column="1" Content="打开输出目录" Command="{Binding OpenOutputDirCommand}" Width="110" Height="28"/>
