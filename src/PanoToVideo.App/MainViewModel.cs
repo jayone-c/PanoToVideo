@@ -157,7 +157,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             if (_preferredDevice == null) { StatusText = "无可用 GPU 设备"; return; }
 
             // 预设退回
-            using var hevcProbe = new MfHevcEncoderProbe();
+            var hevcProbe = new MfHevcEncoderProbe();
             var presetResult = new PresetResolver(hevcProbe).Resolve(_settings.Preset);
             _lastPreset = presetResult; // H9/M15: 缓存供重试复用
             PresetFallbackHint = presetResult.FallbackReason ?? "";

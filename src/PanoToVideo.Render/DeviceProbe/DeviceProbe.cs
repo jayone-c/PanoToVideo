@@ -23,41 +23,63 @@ public sealed class DeviceProbe : IDisposable
         _mfStarted = true;
 
         var candidates = new List<(IDXGIAdapter1 Adapter, AdapterCandidate Candidate, string? EncoderName)>();
-        using var factory = DXGI.CreateDXGIFactory2<IDXGIFactory4>(debug: false);
-
-        for (uint i = 0; factory.EnumAdapters1(i, out IDXGIAdapter1? adapter).Success; i++)
+        bool completed = false;
+        try
         {
-            using var adapterRef = adapter;
-            var desc = adapterRef.Description1;
-            var isSoftware = (desc.Flags & AdapterFlags.Software) != AdapterFlags.None;
-            long luid = ((long)(uint)desc.Luid.LowPart) | ((long)desc.Luid.HighPart << 32);
+            using var factory = DXGI.CreateDXGIFactory2<IDXGIFactory4>(debug: false);
 
-            string? encoderName = null;
-            bool hasEncoder = false;
-            if (!isSoftware)
-                (hasEncoder, encoderName) = TryProbeEncoder(adapterRef);
+            for (uint i = 0; factory.EnumAdapters1(i, out IDXGIAdapter1? adapter).Success; i++)
+            {
+                using var adapterRef = adapter;
+                var desc = adapterRef.Description1;
+                var isSoftware = (desc.Flags & AdapterFlags.Software) != AdapterFlags.None;
+                long luid = ((long)(uint)desc.Luid.LowPart) | ((long)desc.Luid.HighPart << 32);
 
-            var candidate = new AdapterCandidate(
-                Luid: luid,
-                DedicatedVideoMemoryBytes: desc.DedicatedVideoMemory,
-                IsSoftware: isSoftware,
-                HasHardwareEncoder: hasEncoder,
-                Description: desc.Description);
+                string? encoderName = null;
+                bool hasEncoder = false;
+                if (!isSoftware)
+                    (hasEncoder, encoderName) = TryProbeEncoder(adapterRef);
 
-            // 保留可激活编码器的适配器 COM 对象（QueryInterface 转移所有权）
-            if (hasEncoder)
-                candidates.Add((adapterRef.QueryInterface<IDXGIAdapter1>(), candidate, encoderName));
+                var candidate = new AdapterCandidate(
+                    Luid: luid,
+                    DedicatedVideoMemoryBytes: desc.DedicatedVideoMemory,
+                    IsSoftware: isSoftware,
+                    HasHardwareEncoder: hasEncoder,
+                    Description: desc.Description);
+
+                // 保留可激活编码器的适配器 COM 对象（QueryInterface 转移所有权）
+                if (hasEncoder)
+                    candidates.Add((adapterRef.QueryInterface<IDXGIAdapter1>(), candidate, encoderName));
+            }
+
+            var selector = new DeviceSelector();
+            var preferred = selector.SelectPreferred(candidates.Select(c => c.Candidate));
+            (IDXGIAdapter1 Adapter, AdapterCandidate Candidate, string? EncoderName)? preferredEntry = null;
+            if (preferred != null)
+                preferredEntry = candidates.First(c => c.Candidate.Luid == preferred.Luid);
+
+            var result = new DeviceProbeResult(
+                candidates.Select(c => new DeviceEntry(c.Candidate, c.Adapter, c.EncoderName)).ToList(),
+                preferredEntry == null ? null : new DeviceEntry(preferredEntry.Value.Candidate, preferredEntry.Value.Adapter, preferredEntry.Value.EncoderName));
+            completed = true;
+            return result;
         }
-
-        var selector = new DeviceSelector();
-        var preferred = selector.SelectPreferred(candidates.Select(c => c.Candidate));
-        (IDXGIAdapter1 Adapter, AdapterCandidate Candidate, string? EncoderName)? preferredEntry = null;
-        if (preferred != null)
-            preferredEntry = candidates.First(c => c.Candidate.Luid == preferred.Luid);
-
-        return new DeviceProbeResult(
-            candidates.Select(c => new DeviceEntry(c.Candidate, c.Adapter, c.EncoderName)).ToList(),
-            preferredEntry == null ? null : new DeviceEntry(preferredEntry.Value.Candidate, preferredEntry.Value.Adapter, preferredEntry.Value.EncoderName));
+        finally
+        {
+            // M8 修复：异常路径 MFShutdown + 清理已收集的 candidates（避免泄漏 Adapter COM）
+            if (!completed)
+            {
+                foreach (var c in candidates)
+                {
+                    try { c.Adapter.Dispose(); } catch { }
+                }
+                if (_mfStarted)
+                {
+                    MediaFactory.MFShutdown();
+                    _mfStarted = false;
+                }
+            }
+        }
     }
 
     /// <summary>对适配器创建 D3D11 设备 + 挂 MF + 枚举 H.264 硬件编码器 + ActivateObject 验证。</summary>
@@ -71,7 +93,8 @@ public sealed class DeviceProbe : IDisposable
                 out ID3D11Device device, out _, out _).CheckError();
             using (device)
             {
-                var dxgiManager = MediaFactory.MFCreateDXGIDeviceManager();
+                // H7 修复：dxgiManager using 释放 COM
+                using var dxgiManager = MediaFactory.MFCreateDXGIDeviceManager();
                 dxgiManager.ResetDevice(device);
 
                 // 枚举 H.264 硬件编码器（输入 NV12，输出 H.264）

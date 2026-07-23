@@ -38,7 +38,7 @@ var preferred = probeResult.Preferred;
 Console.WriteLine($"\n首选设备: {preferred.Candidate.Description}  Luid=0x{preferred.Candidate.Luid:X16}  编码器={preferred.EncoderName}");
 
 // 阶段3: H.265 编码器探测 + 预设退回（任务3）
-using var hevcProbe = new MfHevcEncoderProbe();
+var hevcProbe = new MfHevcEncoderProbe();
 var hevcAvailable = hevcProbe.IsAvailable();
 var resolver = new PresetResolver(hevcProbe);
 var sizeResult = resolver.Resolve(ExportPreset.Size);

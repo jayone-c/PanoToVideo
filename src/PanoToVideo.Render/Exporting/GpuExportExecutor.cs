@@ -107,15 +107,15 @@ public sealed class GpuExportExecutor : IExportExecutor
                         encSec > 0 ? (i + 1) / encSec : 0,
                         sw.Elapsed));
                 }
-                // 释放纹理池（Finalize 前 MF 应已消化）
+                // M5 修复：先 Finalize（MF flush 消化帧）再释放纹理池，避免访问已 Dispose 纹理
                 var tFinalize = System.Diagnostics.Stopwatch.StartNew();
-                foreach (var t in nv12Pool) t?.Dispose();
                 encoder.Finalize();
+                foreach (var t in nv12Pool) t?.Dispose();
                 tFinalize.Stop();
 
                 Console.WriteLine($"[诊断] DeviceProbe={tProbe.Elapsed.TotalSeconds:F2}s CreateDevice={tDev.Elapsed.TotalSeconds:F2}s Upload={tUpload.Elapsed.TotalSeconds:F2}s EncInit={tEncInit.Elapsed.TotalSeconds:F2}s");
                 Console.WriteLine($"[诊断] 逐帧: 投影{projSec:F2}s 编码{encSec:F2}s Finalize={tFinalize.Elapsed.TotalSeconds:F2}s (总{totalFrames}帧)");
-                Console.WriteLine($"[诊断] 投影FPS={totalFrames / projSec:F0} 编码FPS={totalFrames / encSec:F0}");
+                Console.WriteLine($"[诊断] 投影FPS={(projSec > 0 ? totalFrames / projSec : 0):F0} 编码FPS={(encSec > 0 ? totalFrames / encSec : 0):F0}");
             }
             sw.Stop();
             double avgFps = totalFrames > 0 ? totalFrames / sw.Elapsed.TotalSeconds : 0;

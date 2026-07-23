@@ -20,7 +20,8 @@ public static class MfDeviceProbe
         MediaFactory.MFStartup(useLightVersion: true);
         try
         {
-            var manager = MediaFactory.MFCreateDXGIDeviceManager();
+            // H6 修复：manager using 释放 COM
+            using var manager = MediaFactory.MFCreateDXGIDeviceManager();
             uint token = manager.ResetToken;
             // ResetDevice 把 D3D11 设备注册到 MF 设备管理器（ADR Q1）
             manager.ResetDevice(device);
@@ -64,8 +65,18 @@ public static class MfDeviceProbe
                 out IntPtr pActivate,
                 out uint count);
 
+            // H6 修复：释放 IMFActivate* 数组 COM 引用（每个 IntPtr 是 IMFActivate*）
             if (pActivate != IntPtr.Zero)
+            {
+                int ptrSize = IntPtr.Size;
+                for (uint i = 0; i < count; i++)
+                {
+                    IntPtr activatePtr = Marshal.ReadIntPtr(pActivate, (int)(i * ptrSize));
+                    if (activatePtr != IntPtr.Zero)
+                        Marshal.Release(activatePtr);
+                }
                 Marshal.FreeCoTaskMem(pActivate);
+            }
             return count;
         }
         finally
@@ -83,8 +94,8 @@ public static class MfDeviceProbe
         MediaFactory.MFStartup(useLightVersion: true);
         try
         {
-            // riid = ID3D11Texture2D 接口 ID；subresourceIndex=0；bottomUpWhenLinear=false
-            var buffer = MediaFactory.MFCreateDXGISurfaceBuffer(typeof(ID3D11Texture2D).GUID, texture, 0, false);
+            // H6 修复：buffer using 释放 COM
+            using var buffer = MediaFactory.MFCreateDXGISurfaceBuffer(typeof(ID3D11Texture2D).GUID, texture, 0, false);
             return (buffer != null, null);
         }
         catch (Exception ex)

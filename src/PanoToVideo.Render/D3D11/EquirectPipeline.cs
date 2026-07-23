@@ -136,7 +136,8 @@ public sealed class EquirectPipeline : IDisposable
         try
         {
             var box = new SubresourceData { DataPointer = handle.AddrOfPinnedObject(), RowPitch = (uint)(width * 4) };
-            var texture = _device.CreateTexture2D(desc, new[] { box });
+            // H3 修复：纹理 using 确定释放，SRV 持内部引用，纹理 Dispose 后 GPU 资源存活到 SRV 释放
+            using var texture = _device.CreateTexture2D(desc, new[] { box });
             return _device.CreateShaderResourceView(texture);
         }
         finally
