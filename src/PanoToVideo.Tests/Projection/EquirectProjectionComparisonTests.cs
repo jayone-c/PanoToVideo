@@ -19,7 +19,7 @@ public class EquirectProjectionComparisonTests
     private static string RepoRoot()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir != null && !File.Exists(Path.Combine(dir.FullName, "全景图转短视频工具-PRD.md")))
+        while (dir != null && !File.Exists(Path.Combine(dir.FullName, "src", "PanoToVideo.sln")))
             dir = dir.Parent;
         return dir?.FullName ?? AppContext.BaseDirectory;
     }

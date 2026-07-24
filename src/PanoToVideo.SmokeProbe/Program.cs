@@ -390,7 +390,7 @@ Console.WriteLine("\n=== 阶段2 · 批量队列验收 ===");
         erpRgba[i * 4 + 3] = 255;
     }
 
-    // 100 项队列（PRD门槛3：≥100图批量，2张真实图循环50次模拟，规划§9允许循环）
+    // 100 项队列（≥100图批量，使用公开合成 fixture 循环模拟）。
     // 注入1个故意失败项（第50项，损坏图）验证"单项失败不阻塞队列"
     var batchParams = new RenderParameters(1, 360, 60, 75.0, 640, 640, 0.0,
         RotationDirection.Clockwise, false, Environment.ProcessorCount);
@@ -401,8 +401,8 @@ Console.WriteLine("\n=== 阶段2 · 批量队列验收 ===");
         bool isFailItem = i == 50;
         string name = isFailItem
             ? $"FAIL_item50_corrupt.jpg"
-            : $"{(i % 2 == 0 ? "玄关1" : "茶室空间")}_{i}_equirectangular_6000x3000.jpg";
-        items.Add(new QueueItem(name, isFailItem ? 0 : 6000, isFailItem ? 0 : 3000));
+            : $"fixture_{i}_equirectangular_8192x4096.jpg";
+        items.Add(new QueueItem(name, isFailItem ? 0 : 8192, isFailItem ? 0 : 4096));
     }
 
     string batchDir = Path.Combine(repoRoot, "smoke_batch");
@@ -410,18 +410,14 @@ Console.WriteLine("\n=== 阶段2 · 批量队列验收 ===");
     Directory.CreateDirectory(batchDir);
     long avail = new DriveInfo(Path.GetPathRoot(batchDir)!).AvailableFreeSpace;
 
-    // erpLoader: 失败项返回 size=0 空数据致 EquirectValidator 拒绝；正常项用真实图 RGBA
-    var xuanRgba = LoadJpegRgba(Path.Combine(repoRoot, "720", "玄关1.jpg")).Rgba;
-    var chaRgba = LoadJpegRgba(Path.Combine(repoRoot, "720", "茶室空间.jpg")).Rgba;
+    // erpLoader: 失败项返回 size=0 空数据致 EquirectValidator 拒绝；正常项复用公开 fixture RGBA。
     var scheduler = new SerialBatchScheduler(
         executorFactory: (item, rgba, w, h) => new FfmpegNvencExecutor(rgba, w, h, batchParams, ExportPreset.Compatibility),
         erpLoader: item =>
         {
             if (item.SourceFileName.Contains("FAIL"))
                 return (Rgba: Array.Empty<byte>(), W: 0, H: 0);
-            if (item.SourceFileName.Contains("玄关1"))
-                return (Rgba: xuanRgba, W: 6000, H: 3000);
-            return (Rgba: chaRgba, W: 6000, H: 3000);
+            return (Rgba: erpRgba, W: erpW, H: erpH);
         });
 
     var sw = Stopwatch.StartNew();
@@ -484,32 +480,6 @@ static double PsnrRgb(byte[] rgba, byte[] rgb)
     return mse < 1e-10 ? 100.0 : 10.0 * Math.Log10(255.0 * 255.0 / mse);
 }
 
-static (byte[] Rgba, int W, int H) LoadJpegRgba(string path)
-{
-    using var bmp = new System.Drawing.Bitmap(path);
-    int w = bmp.Width, h = bmp.Height;
-    var data = bmp.LockBits(new System.Drawing.Rectangle(0, 0, w, h),
-        System.Drawing.Imaging.ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppRgb);
-    try
-    {
-        var rgba = new byte[w * h * 4];
-        for (int y = 0; y < h; y++)
-        {
-            var row = new byte[w * 4];
-            Marshal.Copy(IntPtr.Add(data.Scan0, y * data.Stride), row, 0, w * 4);
-            for (int x = 0; x < w; x++)
-            {
-                rgba[(y * w + x) * 4] = row[x * 4 + 2];
-                rgba[(y * w + x) * 4 + 1] = row[x * 4 + 1];
-                rgba[(y * w + x) * 4 + 2] = row[x * 4];
-                rgba[(y * w + x) * 4 + 3] = 255;
-            }
-        }
-        return (rgba, w, h);
-    }
-    finally { bmp.UnlockBits(data); }
-}
-
 static int CountNonZero(byte[] rgba)
 {
     int n = 0;
@@ -536,7 +506,7 @@ static double PsnrRgbaToRgba(byte[] a, byte[] b)
 static string FindRepoRoot()
 {
     var d = new DirectoryInfo(AppContext.BaseDirectory);
-    while (d != null && !File.Exists(Path.Combine(d.FullName, "全景图转短视频工具-PRD.md")))
+    while (d != null && !File.Exists(Path.Combine(d.FullName, "src", "PanoToVideo.sln")))
         d = d.Parent;
-    return d!.FullName;
+    return d?.FullName ?? throw new DirectoryNotFoundException("未找到仓库根目录（src/PanoToVideo.sln）");
 }

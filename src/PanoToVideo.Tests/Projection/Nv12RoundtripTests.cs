@@ -107,7 +107,7 @@ public class Nv12RoundtripTests
     private static string FindRepoRoot()
     {
         var d = new DirectoryInfo(AppContext.BaseDirectory);
-        while (d != null && !File.Exists(Path.Combine(d.FullName, "全景图转短视频工具-PRD.md")))
+        while (d != null && !File.Exists(Path.Combine(d.FullName, "src", "PanoToVideo.sln")))
             d = d.Parent;
         return d!.FullName;
     }

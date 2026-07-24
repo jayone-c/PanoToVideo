@@ -23,13 +23,18 @@ smoke_batch/
 asteroid_vis/
 tests/diagnose/
 
-## 发布产物（保留 README 与许可文件，排除二进制 app/）
-dist/app/
+## 发布产物（通过 GitHub Releases 分发，不提交源码仓库）
+dist/
 
 ## IDE
 .idea/
 .vscode/
 .claude/settings.local.json
+.trae/
+.scratch/
+
+## 本地实拍素材（不得提交；公开测试仅使用 tests/fixtures 中的合成样本）
+720/
 
 ## Python（py360convert 参考帧生成）
 __pycache__/

@@ -15,17 +15,11 @@ using static Vortice.Direct3D11.D3D11;
 // ===== 阶段4 · RTX 4090 D 性能基准验收（PRD 成功标准2，Q5）=====
 // 基准任务：输入ERP -> 1080×1920、30秒、60FPS、360°、75°FOV、H.264
 // 验收：端到端 ≥60 输出 FPS（纯渲染 ≤30 秒），日志证明投影与编码实际设备。
-// 用法：dotnet run -c Release [7680|xuanguan1|chashi]  默认 7680
+// 用法：dotnet run -c Release（使用公开测试 fixture）
 
-string imageArg = args.Length > 0 ? args[0] : "7680";
 string repoRoot = FindRepoRoot();
-string erpPath = imageArg switch
-{
-    "xuanguan1" => Path.Combine(repoRoot, "720", "玄关1.jpg"),
-    "chashi" => Path.Combine(repoRoot, "720", "茶室空间.jpg"),
-    _ => Path.Combine(repoRoot, "tests", "fixtures", "erp_7680x3840.jpg"),
-};
-string imageLabel = imageArg == "7680" ? "7680x3840(缩放)" : $"{imageArg}(6000x3000真实)";
+string erpPath = Path.Combine(repoRoot, "tests", "fixtures", "erp_7680x3840.jpg");
+string imageLabel = "7680x3840(公开测试 fixture)";
 
 Console.WriteLine($"=== 阶段4 · RTX 4090 D 性能基准验收 [{imageLabel}] ===");
 
@@ -138,9 +132,9 @@ static (byte[] rgba, int w, int h) DecodeImage(string path)
 static string FindRepoRoot()
 {
     var d = new DirectoryInfo(AppContext.BaseDirectory);
-    while (d != null && !File.Exists(Path.Combine(d.FullName, "全景图转短视频工具-PRD.md")))
+    while (d != null && !File.Exists(Path.Combine(d.FullName, "src", "PanoToVideo.sln")))
         d = d.Parent;
-    return d!.FullName;
+    return d?.FullName ?? throw new DirectoryNotFoundException("未找到仓库根目录（src/PanoToVideo.sln）");
 }
 
 sealed class ProgressAdapter<T> : IProgress<T>
