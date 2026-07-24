@@ -20,7 +20,7 @@ public sealed class QueueItem : INotifyPropertyChanged
     public TaskStatus Status
     {
         get => _status;
-        private set { _status = value; OnPropertyChanged(); OnPropertyChanged(nameof(ProgressText)); }
+        private set { _status = value; OnPropertyChanged(); OnPropertyChanged(nameof(StatusDisplay)); OnPropertyChanged(nameof(ProgressText)); }
     }
 
     public QueueProgress Progress { get; } = new();
@@ -33,13 +33,25 @@ public sealed class QueueItem : INotifyPropertyChanged
     public byte[]? Thumbnail { get; private set; }
 
     /// <summary>UI 绑定用进度文本。</summary>
+    public string StatusDisplay => Status switch
+    {
+        TaskStatus.PendingValidation => "校验中",
+        TaskStatus.Pending => "等待导出",
+        TaskStatus.Processing => "导出中",
+        TaskStatus.Completed => "已完成",
+        TaskStatus.Failed => "失败",
+        TaskStatus.Cancelled => "已取消",
+        _ => "未知状态",
+    };
+
+    /// <summary>UI 绑定用进度文本。</summary>
     public string ProgressText => Status switch
     {
         TaskStatus.Completed => $"完成 {AverageFps:F0}fps",
         TaskStatus.Failed => "失败",
         TaskStatus.Cancelled => "已取消",
         TaskStatus.Processing => Progress.TotalFrames > 0 ? $"{Progress.FramesDone}/{Progress.TotalFrames}" : "处理中",
-        _ => Status.ToString(),
+        _ => "—",
     };
 
     public QueueItem(string sourceFileName, int width, int height)
@@ -55,7 +67,11 @@ public sealed class QueueItem : INotifyPropertyChanged
         Status = TaskStateTransitions.Transition(Status, to);
     }
 
-    public void SetThumbnail(byte[] thumbnail) => Thumbnail = thumbnail;
+    public void SetThumbnail(byte[] thumbnail)
+    {
+        Thumbnail = thumbnail;
+        OnPropertyChanged(nameof(Thumbnail));
+    }
 
     public void UpdateProgress(int framesDone, int totalFrames, double projectionFps, double encodingFps, TimeSpan elapsed)
     {

@@ -38,6 +38,8 @@ public class QueueItemTests
         Assert.Equal(thumb, item.Thumbnail);
         Assert.Equal(8192, item.Width);
         Assert.Equal(4096, item.Height);
+        Assert.Equal("等待导出", item.StatusDisplay);
+        Assert.Equal("—", item.ProgressText);
     }
 
     [Fact]

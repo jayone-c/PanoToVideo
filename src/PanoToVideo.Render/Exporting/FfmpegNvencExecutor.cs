@@ -26,16 +26,19 @@ public sealed class FfmpegNvencExecutor : IExportExecutor
     private readonly int _erpW;
     private readonly int _erpH;
     private readonly uint _bitrate;
+    // P0-3：HEVC 可用性（由 RenderFallbackDecisionProbe 探测后注入），决定 hevc_nvenc vs h264_nvenc
+    private readonly bool _hevcAvailable;
     private DeviceEntry? _device;
     // 静态缓存：批量任务复用设备探测结果，避免每项重新探测（0.4s/项）
     private static readonly CachedDeviceProbe s_cachedProbe = new();
 
-    public FfmpegNvencExecutor(byte[] erpRgba, int erpW, int erpH, RenderParameters parameters, ExportPreset preset)
+    public FfmpegNvencExecutor(byte[] erpRgba, int erpW, int erpH, RenderParameters parameters, ExportPreset preset, bool hevcAvailable = false)
     {
         _erpRgba = erpRgba;
         _erpW = erpW;
         _erpH = erpH;
         _bitrate = (uint)ExportPrecheck.EstimateBitrate(preset, parameters.Width, parameters.Height, parameters.Fps);
+        _hevcAvailable = hevcAvailable;
     }
 
     public ExportExecutionResult Execute(
@@ -52,6 +55,11 @@ public sealed class FfmpegNvencExecutor : IExportExecutor
             // 1. DeviceProbe 选首选设备（缓存复用，避免每项重新探测）
             _device = s_cachedProbe.Probe().Preferred ?? throw new InvalidOperationException("无合格 GPU 设备");
 
+            // P0-2/P0-3：命令委托 Core FfmpegCommandBuilder（hevcAvailable 决定 hevc_nvenc vs h264_nvenc）
+            // 提前构造以便 catch 分支也能引用 CodecLabel 上报真实编码器。
+            var cmd = FfmpegCommandBuilder.BuildGpuNvenc(
+                tmpPath, parameters.Width, parameters.Height, parameters.Fps, _bitrate, preset, _hevcAvailable);
+
             // 2. 创建 D3D11 设备
             D3D11CreateDevice(_device.Adapter, DriverType.Unknown, DeviceCreationFlags.BgraSupport,
                 [FeatureLevel.Level_11_1, FeatureLevel.Level_11_0],
@@ -61,16 +69,16 @@ public sealed class FfmpegNvencExecutor : IExportExecutor
                 using var pipeline = new EquirectPipeline(device);
                 using var srv = pipeline.UploadErpTexture(_erpRgba, _erpW, _erpH);
 
-                // 3. 启动 FFmpeg h264_nvenc 子进程（stdin rawvideo NV12 -> H.264 MP4）
-                var ffmpeg = new ProcessStartInfo("ffmpeg",
-                    $"-y -f rawvideo -pixel_format nv12 -video_size {parameters.Width}x{parameters.Height} " +
-                    $"-framerate {parameters.Fps} -i - -c:v h264_nvenc -b:v {_bitrate} -movflags +faststart \"{tmpPath}\"")
+                // 3. 启动 FFmpeg NVENC 子进程（stdin rawvideo NV12 -> H.264/H.265 MP4）
+                var ffmpeg = new ProcessStartInfo(cmd.Exe)
                 {
                     RedirectStandardInput = true,
                     RedirectStandardError = true,
                     UseShellExecute = false,
                     CreateNoWindow = true,
                 };
+                foreach (var arg in cmd.Args)
+                    ffmpeg.ArgumentList.Add(arg);
                 var ff = Process.Start(ffmpeg) ?? throw new InvalidOperationException("FFmpeg 启动失败");
                 string? ffErr = null;
                 int ffExitCode = -1; // finally Dispose 前记录（H1）
@@ -90,7 +98,7 @@ public sealed class FfmpegNvencExecutor : IExportExecutor
                             var err = errTask.IsCompleted ? errTask.Result : "";
                             throw new InvalidOperationException($"FFmpeg 提前退出（码 {ff.ExitCode}）: {err}");
                         }
-                        double yaw = YawSchedule.YawAt(i, totalFrames, parameters.RotationDegrees, parameters.Direction);
+                        double yaw = YawSchedule.YawAt(i, totalFrames, parameters.RotationDegrees, parameters.Direction, parameters.StartYaw);
 
                         var ps = Stopwatch.StartNew();
                         using var nv12 = pipeline.RenderFrameToNv12(srv, _erpW, _erpH,
@@ -129,10 +137,34 @@ public sealed class FfmpegNvencExecutor : IExportExecutor
             }
             sw.Stop();
             double avgFps = totalFrames / sw.Elapsed.TotalSeconds;
-            return new ExportExecutionResult(true, null, sw.Elapsed, avgFps);
+            // P0-1/PRD #5：上报真实投影设备与编码器（cmd.CodecLabel 已含 H.264/H.265 NVENC）
+            return new ExportExecutionResult(true, null, sw.Elapsed, avgFps)
+            {
+                ProjectionDevice = _device?.Candidate.Description ?? "GPU",
+                EncoderName = cmd.CodecLabel,
+                UsedCpuFallback = false,
+            };
         }
-        catch (OperationCanceledException) { sw.Stop(); return new ExportExecutionResult(false, "已取消", sw.Elapsed, 0); }
-        catch (Exception ex) { sw.Stop(); return new ExportExecutionResult(false, $"{ex.GetType().Name}: {ex.Message}", sw.Elapsed, 0); }
+        catch (OperationCanceledException)
+        {
+            sw.Stop();
+            return new ExportExecutionResult(false, "已取消", sw.Elapsed, 0)
+            {
+                ProjectionDevice = _device?.Candidate.Description ?? "GPU",
+                EncoderName = preset == ExportPreset.Size && _hevcAvailable ? "H.265 NVENC" : "H.264 NVENC",
+                UsedCpuFallback = false,
+            };
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            return new ExportExecutionResult(false, $"{ex.GetType().Name}: {ex.Message}", sw.Elapsed, 0)
+            {
+                ProjectionDevice = _device?.Candidate.Description ?? "GPU",
+                EncoderName = preset == ExportPreset.Size && _hevcAvailable ? "H.265 NVENC" : "H.264 NVENC",
+                UsedCpuFallback = false,
+            };
+        }
     }
 
     /// <summary>回读 NV12 平面纹理为连续字节（Y plane + UV plane，FFmpeg NV12 布局）。</summary>

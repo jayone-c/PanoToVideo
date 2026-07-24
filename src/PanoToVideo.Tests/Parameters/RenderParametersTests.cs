@@ -24,6 +24,8 @@ public class RenderParametersTests
         Assert.Equal(0.0, p.Pitch);
         Assert.Equal(RotationDirection.Clockwise, p.Direction);
         Assert.False(p.AsteroidIntro);
+        Assert.Equal(Environment.ProcessorCount, p.CpuCores);
+        Assert.Equal(0.0, p.StartYaw);
     }
 
     [Fact]
@@ -139,6 +141,26 @@ public class RenderParametersTests
         Assert.True(result.IsValid);
     }
 
+    [Theory]
+    [InlineData(-1.0)]
+    [InlineData(360.0)]
+    public void Validate_起始方位越界_无效(double startYaw)
+    {
+        var p = RenderParameters.Default() with { StartYaw = startYaw };
+        var result = _sut.Validate(p);
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.Contains("起始方位"));
+    }
+
+    [Theory]
+    [InlineData(0.0)]
+    [InlineData(359.0)]
+    public void Validate_起始方位边界_有效(double startYaw)
+    {
+        var p = RenderParameters.Default() with { StartYaw = startYaw };
+        Assert.True(_sut.Validate(p).IsValid);
+    }
+
     [Fact]
     public void Validate_多个错误_全部收集()
     {
@@ -151,5 +173,61 @@ public class RenderParametersTests
         var result = _sut.Validate(p);
         Assert.False(result.IsValid);
         Assert.True(result.Errors.Count >= 3);
+    }
+
+    [Fact]
+    public void Validate_CpuCores默认值_有效()
+    {
+        var p = RenderParameters.Default();
+        var result = _sut.Validate(p);
+        Assert.True(result.IsValid);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Validate_CpuCores非正_无效(int cores)
+    {
+        var p = RenderParameters.Default() with { CpuCores = cores };
+        var result = _sut.Validate(p);
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.Contains("CPU 核心数"));
+    }
+
+    [Fact]
+    public void Validate_CpuCores超出上限_无效()
+    {
+        var p = RenderParameters.Default() with { CpuCores = Environment.ProcessorCount + 1 };
+        var result = _sut.Validate(p);
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.Contains("CPU 核心数"));
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void Validate_CpuCores边界与有效值_有效(int cores)
+    {
+        // 仅当本机核心数 >= cores 时有效；跳过核心数不足的环境
+        if (cores > Environment.ProcessorCount)
+            return;
+
+        var p = RenderParameters.Default() with { CpuCores = cores };
+        var result = _sut.Validate(p);
+        Assert.True(result.IsValid);
+    }
+
+    [Fact]
+    public void Validate_显式maxCores重载_按给定上限校验()
+    {
+        var p = RenderParameters.Default() with { CpuCores = 4 };
+        // maxCores=2 时 4 越界
+        var result = _sut.Validate(p, maxCores: 2);
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.Contains("[1, 2]"));
+
+        // maxCores=8 时 4 有效
+        var result2 = _sut.Validate(p, maxCores: 8);
+        Assert.True(result2.IsValid);
     }
 }

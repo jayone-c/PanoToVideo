@@ -88,6 +88,20 @@ public class SerialBatchSchedulerTests
     }
 
     [Fact]
+    public async Task 已在等待导出状态的任务_应直接开始而非被跳过()
+    {
+        var factory = new FakeExecutorFactory();
+        var scheduler = new TestableScheduler(factory);
+        var item = MakeItem(0);
+        item.TransitionTo(TaskStatus.Pending); // UI 入队校验通过后的真实状态
+
+        await scheduler.RunAsync([item], Params, ExportPreset.Compatibility, OutDir, PlentyDisk, default);
+
+        Assert.Equal(TaskStatus.Completed, item.Status);
+        Assert.Single(factory.ExecutedIndices);
+    }
+
+    [Fact]
     public async Task 单项失败_不阻塞队列_后续继续()
     {
         var factory = new FakeExecutorFactory();
@@ -182,5 +196,93 @@ public class SerialBatchSchedulerTests
         Assert.True(items[0].Progress.ProjectionFps > 0);
         Assert.True(items[0].Progress.EncodingFps > 0);
         Assert.Equal(Params.TotalFrames, items[0].Progress.TotalFrames);
+    }
+
+    /// <summary>可控的 IErpLoader：记录 Load/Dispose 次数与顺序。</summary>
+    private sealed class FakeErpLoader : IErpLoader
+    {
+        public int LoadCount { get; private set; }
+        public int DisposeCount { get; private set; }
+        public List<QueueItem> LoadedItems { get; } = new();
+        public LoadedErp Load(QueueItem item)
+        {
+            LoadCount++;
+            LoadedItems.Add(item);
+            return new LoadedErp(new byte[8192 * 4096 * 4], 8192, 4096, release: () => DisposeCount++);
+        }
+    }
+
+    private sealed class InterfaceScheduler : SerialBatchScheduler
+    {
+        public InterfaceScheduler(FakeExecutorFactory factory, IErpLoader erpLoader)
+            : base((item, erpRgba, w, h) => factory.CreateFor(item), erpLoader) { }
+    }
+
+    [Fact]
+    public async Task IErpLoader重载_多项串行_每项Load一次Dispose一次()
+    {
+        var factory = new FakeExecutorFactory();
+        var erpLoader = new FakeErpLoader();
+        var scheduler = new InterfaceScheduler(factory, erpLoader);
+        var items = new[] { MakeItem(0), MakeItem(1), MakeItem(2) };
+
+        await scheduler.RunAsync(items, Params, ExportPreset.Compatibility, OutDir, PlentyDisk, default);
+
+        Assert.All(items, i => Assert.Equal(TaskStatus.Completed, i.Status));
+        Assert.Equal(3, erpLoader.LoadCount);
+        Assert.Equal(3, erpLoader.DisposeCount);
+        Assert.Equal(items, erpLoader.LoadedItems);
+    }
+
+    [Fact]
+    public async Task IErpLoader重载_失败项仍Dispose_不阻塞后续()
+    {
+        var factory = new FakeExecutorFactory();
+        factory.FailIndices[0] = true; // 第一项失败
+        var erpLoader = new FakeErpLoader();
+        var scheduler = new InterfaceScheduler(factory, erpLoader);
+        var items = new[] { MakeItem(0), MakeItem(1) };
+
+        await scheduler.RunAsync(items, Params, ExportPreset.Compatibility, OutDir, PlentyDisk, default);
+
+        Assert.Equal(TaskStatus.Failed, items[0].Status);
+        Assert.Equal(TaskStatus.Completed, items[1].Status);
+        Assert.Equal(2, erpLoader.LoadCount);
+        Assert.Equal(2, erpLoader.DisposeCount); // 失败项也释放
+    }
+
+    [Fact]
+    public async Task IErpLoader重载_取消项仍Dispose()
+    {
+        var factory = new FakeExecutorFactory();
+        var erpLoader = new FakeErpLoader();
+        var scheduler = new InterfaceScheduler(factory, erpLoader);
+        var items = new[] { MakeItem(0), MakeItem(1) };
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await scheduler.RunAsync(items, Params, ExportPreset.Compatibility, OutDir, PlentyDisk, cts.Token);
+
+        Assert.Equal(TaskStatus.Cancelled, items[0].Status);
+        Assert.Equal(TaskStatus.PendingValidation, items[1].Status);
+        Assert.Equal(1, erpLoader.LoadCount);
+        Assert.Equal(1, erpLoader.DisposeCount); // 取消项也释放
+    }
+
+    [Fact]
+    public async Task IErpLoader重载_暂停时已加载项Dispose()
+    {
+        var factory = new FakeExecutorFactory();
+        var erpLoader = new FakeErpLoader();
+        var scheduler = new InterfaceScheduler(factory, erpLoader);
+        var items = new[] { MakeItem(0), MakeItem(1) };
+        scheduler.Pause();
+
+        await scheduler.RunAsync(items, Params, ExportPreset.Compatibility, OutDir, PlentyDisk, default);
+
+        Assert.Equal(TaskStatus.Completed, items[0].Status);
+        Assert.Equal(TaskStatus.PendingValidation, items[1].Status);
+        Assert.Equal(1, erpLoader.LoadCount);
+        Assert.Equal(1, erpLoader.DisposeCount);
     }
 }

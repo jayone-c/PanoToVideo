@@ -3,18 +3,15 @@ namespace PanoToVideo.Core.Naming;
 /// <summary>
 /// 输出命名与重名递增（开发规划 §阶段2任务4、§8）。
 /// 格式：{原文件名}_{宽}x{高}_{时长}s_{旋转度}deg.mp4
-/// 重名追加 _1/_2... 最小可用序号，不覆盖。默认输出到所选目录下 exports/。
+/// 重名追加 _1/_2... 最小可用序号，不覆盖。默认与原图保存在同一目录。
 /// </summary>
 public static class OutputNaming
 {
-    public const string ExportsSubdir = "exports";
-
     public static string BuildFileName(
         string sourceNameNoExt, int width, int height, int durationSeconds, int rotationDegrees) =>
         $"{sourceNameNoExt}_{width}x{height}_{durationSeconds}s_{rotationDegrees}deg.mp4";
 
-    public static string CombineExportsDir(string baseDir) =>
-        Path.Combine(baseDir, ExportsSubdir);
+    public static string CombineExportsDir(string baseDir) => baseDir;
 
     /// <summary>
     /// 在 dir 下为 baseName 解析不冲突的唯一路径。existingFiles 为 dir 下已存在的文件名集合。

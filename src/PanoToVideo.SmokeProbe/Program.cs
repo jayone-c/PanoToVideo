@@ -153,7 +153,7 @@ using (context)
             using var nv12Frame = pipeline.RenderFrameToNv12(srv, erpW, erpH, encW, encH, 75, yaw, 0);
             encoder.SubmitFrame(nv12Frame, i);
         }
-        encoder.Finalize();
+        encoder.Finish();
         var fi = new FileInfo(mp4Path);
         Console.WriteLine($"  编码完成: {encFrames}帧 -> {mp4Path} ({fi.Length} 字节)");
         Console.WriteLine($"  Q2端到端: {(fi.Length > 0 ? "成功" : "失败(空文件)")}");
@@ -217,7 +217,8 @@ Console.WriteLine("\n=== 阶段1 · 单图导出全链路 ===");
     var parameters = new RenderParameters(
         DurationSeconds: 3, RotationDegrees: 360, Fps: 60,
         HorizontalFov: 75.0, Width: 1080, Height: 1920, Pitch: 0.0,
-        Direction: RotationDirection.Clockwise, AsteroidIntro: false);
+        Direction: RotationDirection.Clockwise, AsteroidIntro: false,
+        CpuCores: Environment.ProcessorCount);
     var imageInfo = new ImageInfo(erpW, erpH, false, "scene_equirectangular_8192x4096.bin");
 
     string outDir = Path.Combine(repoRoot, "smoke_exports");
@@ -303,7 +304,7 @@ Console.WriteLine("\n=== 阶段1 · 单图导出全链路 ===");
             if (Directory.Exists(astOutDir)) Directory.Delete(astOutDir, true);
             Directory.CreateDirectory(astOutDir);
             var astParams = new RenderParameters(2, 360, 60, 75.0, 640, 640, 0.0,
-                RotationDirection.Clockwise, AsteroidIntro: true);
+                RotationDirection.Clockwise, AsteroidIntro: true, CpuCores: Environment.ProcessorCount);
             var astExecutor = new FfmpegNvencExecutor(erpRgba, erpW, erpH, astParams, ExportPreset.Compatibility);
             var astOrchestrator = new SingleImageExportOrchestrator();
             long astAvail = new DriveInfo(Path.GetPathRoot(astOutDir)!).AvailableFreeSpace;
@@ -392,7 +393,7 @@ Console.WriteLine("\n=== 阶段2 · 批量队列验收 ===");
     // 100 项队列（PRD门槛3：≥100图批量，2张真实图循环50次模拟，规划§9允许循环）
     // 注入1个故意失败项（第50项，损坏图）验证"单项失败不阻塞队列"
     var batchParams = new RenderParameters(1, 360, 60, 75.0, 640, 640, 0.0,
-        RotationDirection.Clockwise, false);
+        RotationDirection.Clockwise, false, Environment.ProcessorCount);
     var items = new List<QueueItem>();
     for (int i = 0; i < 100; i++)
     {

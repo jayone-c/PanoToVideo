@@ -44,8 +44,8 @@ float4 PSMain(VSOutput input) : SV_Target
     float px = input.pos.x - 0.5;
     float py = input.pos.y - 0.5;
 
-    float xNdc = px / (g_outW - 1.0) * 2.0 - 1.0;
-    float yNdc = 1.0 - py / (g_outH - 1.0) * 2.0;
+    float xNdc = px / max(g_outW - 1.0, 1.0) * 2.0 - 1.0;
+    float yNdc = 1.0 - py / max(g_outH - 1.0, 1.0) * 2.0;
 
     float dx = xNdc * g_tanHalfHFov;
     float dy = yNdc * g_tanHalfVFov;

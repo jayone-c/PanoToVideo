@@ -2,6 +2,7 @@ namespace PanoToVideo.Core.Parameters;
 
 /// <summary>
 /// 单图导出参数（PRD 单图参数表）。值对象，不可变。
+/// CpuCores 仅在 CPU 回退模式生效（影响 libx264 -threads），GPU 路径忽略。
 /// </summary>
 public sealed record RenderParameters(
     int DurationSeconds,
@@ -12,7 +13,9 @@ public sealed record RenderParameters(
     int Height,
     double Pitch,
     RotationDirection Direction,
-    bool AsteroidIntro)
+    bool AsteroidIntro,
+    int CpuCores,
+    double StartYaw = 0.0)
 {
     /// <summary>总帧数 = 时长 × FPS。</summary>
     public int TotalFrames => DurationSeconds * Fps;
@@ -26,5 +29,7 @@ public sealed record RenderParameters(
         Height: 1920,
         Pitch: 0.0,
         Direction: RotationDirection.Clockwise,
-        AsteroidIntro: false);
+        AsteroidIntro: false,
+        CpuCores: Environment.ProcessorCount,
+        StartYaw: 0.0);
 }

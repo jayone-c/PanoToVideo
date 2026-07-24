@@ -104,7 +104,8 @@ public sealed class MfH264Encoder : IDisposable
         _sinkWriter.WriteSample(_streamIndex, sample);
     }
 
-    public void Finalize()
+    // L4: 重命名为 Finish 避免遮蔽 Object.Finalize
+    public void Finish()
     {
         if (_finalized) return;
         _sinkWriter.Finalize();
@@ -113,7 +114,7 @@ public sealed class MfH264Encoder : IDisposable
 
     public void Dispose()
     {
-        try { Finalize(); } catch { /* finalize 失败不阻塞 Dispose */ }
+        try { Finish(); } catch { /* finish 失败不阻塞 Dispose */ }
         _sinkWriter?.Dispose();
         MediaFactory.MFShutdown();
     }

@@ -25,6 +25,10 @@ public class SingleImageExportOrchestratorTests
         public bool Executed { get; private set; }
         public CancellationToken? ReceivedToken { get; private set; }
         public bool ProgressReported { get; private set; }
+        // 执行器上报的真实链路信息（默认 null/false，模拟旧行为）
+        public string? ReportedProjectionDevice { get; set; }
+        public string? ReportedEncoderName { get; set; }
+        public bool ReportedUsedCpuFallback { get; set; }
 
         public ExportExecutionResult Execute(
             string tmpPath, ImageInfo imageInfo, RenderParameters parameters, ExportPreset preset,
@@ -38,7 +42,12 @@ public class SingleImageExportOrchestratorTests
             ProgressReported = progress != null;
             return ExecuteShouldFail
                 ? new ExportExecutionResult(false, "执行失败模拟", TimeSpan.Zero, 0)
-                : new ExportExecutionResult(true, null, TimeSpan.FromSeconds(1), 60.0);
+                : new ExportExecutionResult(true, null, TimeSpan.FromSeconds(1), 60.0)
+                {
+                    ProjectionDevice = ReportedProjectionDevice,
+                    EncoderName = ReportedEncoderName,
+                    UsedCpuFallback = ReportedUsedCpuFallback,
+                };
         }
 
         public void AtomicMove(string tmpPath, string finalPath)
@@ -63,7 +72,7 @@ public class SingleImageExportOrchestratorTests
 
         Assert.True(result.Success);
         Assert.EndsWith(".mp4", result.OutputPath);
-        Assert.Contains("exports", result.OutputPath);
+        Assert.StartsWith(OutDir, result.OutputPath);
         Assert.Contains("scene_equirectangular_8192x4096_1080x1920_30s_360deg.mp4", result.OutputPath!);
         Assert.True(executor.Executed);
         Assert.False(executor.CleanedUp); // 成功不清理
@@ -184,6 +193,94 @@ public class SingleImageExportOrchestratorTests
 
         Assert.True(executor.ProgressReported);
         Assert.NotEmpty(progresses);
+    }
+
+    [Fact]
+    public void 非法参数_导出前阻断不执行()
+    {
+        var executor = new FakeExecutor();
+        var sut = new SingleImageExportOrchestrator();
+        // FPS=15 非法
+        var badParams = Params with { Fps = 15 };
+
+        var result = sut.Export(ValidImage(), badParams, ExportPreset.Compatibility,
+            OutDir, PlentyDisk, Array.Empty<string>(), executor);
+
+        Assert.False(result.Success);
+        Assert.Contains("参数校验", result.Error);
+        Assert.False(executor.Executed); // 非法参数不执行
+    }
+
+    [Fact]
+    public void 非法尺寸_导出前阻断()
+    {
+        var executor = new FakeExecutor();
+        var sut = new SingleImageExportOrchestrator();
+        var badParams = Params with { Width = 1081 }; // 奇数
+
+        var result = sut.Export(ValidImage(), badParams, ExportPreset.Compatibility,
+            OutDir, PlentyDisk, Array.Empty<string>(), executor);
+
+        Assert.False(result.Success);
+        Assert.Contains("参数校验", result.Error);
+        Assert.False(executor.Executed);
+    }
+
+    [Fact]
+    public void 执行器上报真实设备_日志透传非硬编码()
+    {
+        var executor = new FakeExecutor
+        {
+            ReportedProjectionDevice = "RTX 4090 D",
+            ReportedEncoderName = "H.264 NVENC",
+            ReportedUsedCpuFallback = false,
+        };
+        var sut = new SingleImageExportOrchestrator();
+
+        var result = sut.Export(ValidImage(), Params, ExportPreset.Compatibility,
+            OutDir, PlentyDisk, Array.Empty<string>(), executor);
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Log);
+        Assert.Equal("RTX 4090 D", result.Log!.ProjectionDevice); // 非硬编码 "GPU"
+        Assert.Equal("H.264 NVENC", result.Log.EncoderName);      // 非硬编码 "H.264"
+        Assert.False(result.Log.UsedCpuFallback);
+    }
+
+    [Fact]
+    public void 执行器上报CPU回退_日志标记回退()
+    {
+        var executor = new FakeExecutor
+        {
+            ReportedProjectionDevice = "CPU",
+            ReportedEncoderName = "libx264",
+            ReportedUsedCpuFallback = true,
+        };
+        var sut = new SingleImageExportOrchestrator();
+
+        var result = sut.Export(ValidImage(), Params, ExportPreset.Compatibility,
+            OutDir, PlentyDisk, Array.Empty<string>(), executor);
+
+        Assert.True(result.Success);
+        Assert.Equal("CPU", result.Log!.ProjectionDevice);
+        Assert.Equal("libx264", result.Log.EncoderName);
+        Assert.True(result.Log.UsedCpuFallback); // 显式标注回退，不伪称硬件加速
+    }
+
+    [Fact]
+    public void 执行器未上报设备_日志兜底默认值()
+    {
+        // 旧执行器不上报设备信息时，编排层兜底 "GPU"/"H.264"/false 保持兼容
+        var executor = new FakeExecutor();
+        var sut = new SingleImageExportOrchestrator();
+
+        var result = sut.Export(ValidImage(), Params, ExportPreset.Compatibility,
+            OutDir, PlentyDisk, Array.Empty<string>(), executor);
+
+        Assert.True(result.Success);
+        Assert.Equal("GPU", result.Log!.ProjectionDevice);
+        Assert.Equal("H.264", result.Log.EncoderName);
+        Assert.False(result.Log.UsedCpuFallback);
     }
 
     private sealed class SyncProgress<T> : IProgress<T>

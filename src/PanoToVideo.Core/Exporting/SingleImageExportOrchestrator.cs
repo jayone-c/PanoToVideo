@@ -6,8 +6,23 @@ using PanoToVideo.Core.Validation;
 
 namespace PanoToVideo.Core.Exporting;
 
-/// <summary>导出执行结果（供编排层决策重命名/清理）。</summary>
-public sealed record ExportExecutionResult(bool Success, string? ErrorMessage, TimeSpan Elapsed, double AverageFps);
+/// <summary>
+/// 导出执行结果（供编排层决策重命名/清理）。
+/// ProjectionDevice/EncoderName/UsedCpuFallback 由执行器上报真实链路信息，
+/// 供 TaskLogRecord 准确记录实际设备与回退状态（PRD #5：不得伪称硬件加速）。
+/// 用 init 属性追加，既有 4 参数构造调用无需改动。
+/// </summary>
+public sealed record ExportExecutionResult(bool Success, string? ErrorMessage, TimeSpan Elapsed, double AverageFps)
+{
+    /// <summary>实际投影设备标签（如 "RTX 4090 D" / "CPU"），未上报时编排层兜底 "GPU"。</summary>
+    public string? ProjectionDevice { get; init; }
+
+    /// <summary>实际编码器标签（如 "H.264 NVENC" / "libx264"），未上报时兜底 "H.264"。</summary>
+    public string? EncoderName { get; init; }
+
+    /// <summary>是否走了 CPU 回退路径。</summary>
+    public bool UsedCpuFallback { get; init; }
+}
 
 /// <summary>
 /// 单图导出编排（开发规划阶段1任务4 + §8 输出契约）。
@@ -38,6 +53,12 @@ public sealed class SingleImageExportOrchestrator
         CancellationToken cancellationToken = default,
         IProgress<ExportProgress>? progress = null)
     {
+        // 0. 参数校验（PRD：非法 FPS/FOV/尺寸在导出前阻断，不入编码）
+        var paramValidator = new RenderParametersValidator();
+        var paramValidation = paramValidator.Validate(parameters);
+        if (!paramValidation.IsValid)
+            return ExportResult.Failed($"参数校验失败: {string.Join("; ", paramValidation.Errors)}");
+
         // 1. ERP 校验
         var validator = new EquirectValidator();
         var validation = validator.Validate(imageInfo);
@@ -94,8 +115,11 @@ public sealed class SingleImageExportOrchestrator
             return ExportResult.Failed($"原子重命名失败: {ex.Message}", exec.Elapsed, exec.AverageFps);
         }
 
-        var log = new TaskLogRecord(parameters, ProjectionDevice: "GPU", EncoderName: "H.264",
-            UsedCpuFallback: false, Elapsed: exec.Elapsed, AverageFps: exec.AverageFps,
+        var log = new TaskLogRecord(parameters,
+            ProjectionDevice: exec.ProjectionDevice ?? "GPU",
+            EncoderName: exec.EncoderName ?? "H.264",
+            UsedCpuFallback: exec.UsedCpuFallback,
+            Elapsed: exec.Elapsed, AverageFps: exec.AverageFps,
             OutputPath: finalPath, ErrorMessage: null);
         return ExportResult.Ok(finalPath, log);
     }

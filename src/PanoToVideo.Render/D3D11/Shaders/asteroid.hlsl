@@ -51,8 +51,8 @@ float3 asteroidDir(float2 ndc)
     float r = length(ndc);
     // latitude: center=-PI/2 (nadir), edge=0 (horizon)
     float lat = -(1.0 - saturate(r)) * (PI / 2.0);
-    // longitude: angle of ndc, rotated by yaw
-    float lon = atan2(ndc.x, -ndc.y) + g_yawRad;
+    // longitude: angle of ndc, rotated by yaw, normalized to [0, 2π)
+    float lon = fmod(atan2(ndc.x, -ndc.y) + g_yawRad, 2.0 * PI);
     // direction vector from (lon, lat)
     float cl = cos(lat);
     return normalize(float3(cl * cos(lon), cl * sin(lon), sin(lat)));

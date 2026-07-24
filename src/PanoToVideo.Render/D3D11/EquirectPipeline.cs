@@ -1,3 +1,4 @@
+using System;
 using System.Runtime.InteropServices;
 using PanoToVideo.Core;
 using PanoToVideo.Core.Parameters;
@@ -34,7 +35,6 @@ public sealed class EquirectPipeline : IDisposable
     private readonly ID3D11PixelShader _ccPsY;
     private readonly ID3D11PixelShader _ccPsUv;
     private readonly ID3D11PixelShader _asteroidPs;
-    private readonly ID3D11Device1? _device1;
 
     // cbuffer Params：与 equirect/asteroid.hlsl 的 cbuffer 布局一致（8 float = 32 字节）
     // 第7位在 equirect shader 为 pad，在 asteroid shader 为 g_asteroidWeight（equirect 不读）
@@ -51,7 +51,6 @@ public sealed class EquirectPipeline : IDisposable
     {
         _device = device;
         _context = device.ImmediateContext;
-        _device1 = device.QueryInterfaceOrNull<ID3D11Device1>();
 
         // shader 运行时编译（Vortice.D3DCompiler），源码从输出目录 Shaders/equirect.hlsl 读取
         string shaderPath = Path.Combine(AppContext.BaseDirectory, "Shaders", "equirect.hlsl");
@@ -200,6 +199,8 @@ public sealed class EquirectPipeline : IDisposable
         _context.PSSetSamplers(0, new[] { _colorConvertSampler }); // M2: BGRA 不环绕
         _context.PSSetConstantBuffers(0, new[] { _paramsBuffer });
         _context.Draw(3, 0);
+        // M4: Draw 后解绑 RTV，避免管线持有已释放纹理引用
+        _context.OMSetRenderTargets(Array.Empty<ID3D11RenderTargetView>(), null);
 
         var yBytes = ReadBack(yTex, width, height, 1);
         var uvBytes = ReadBack(uvTex, width, height, 2);
@@ -330,6 +331,8 @@ public sealed class EquirectPipeline : IDisposable
         _context.RSSetViewport(new Viewport(outW / 2f, outH / 2f));
         _context.PSSetShader(_ccPsUv);
         _context.Draw(3, 0);
+        // M4: Draw 后解绑 RTV，避免管线持有已释放纹理引用
+        _context.OMSetRenderTargets(Array.Empty<ID3D11RenderTargetView>(), null);
 
         return nv12Tex;
     }
@@ -462,7 +465,6 @@ public sealed class EquirectPipeline : IDisposable
         _ccPsUv.Dispose();
         _ccPsY.Dispose();
         _ccPs.Dispose();
-        _device1?.Dispose();
         _ccVs.Dispose();
         _rasterizerState.Dispose();
         _inputLayout.Dispose();

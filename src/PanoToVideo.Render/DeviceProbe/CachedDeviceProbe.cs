@@ -30,7 +30,16 @@ public sealed class CachedDeviceProbe : IDisposable
         lock (_lock)
         {
             if (_disposed) return;
-            // 缓存的 Adapter COM 对象随进程退出释放，无需显式 Dispose
+            // M10: 释放缓存的 Adapter COM 对象（非依赖进程退出）
+            // 注意：Preferred.Adapter 与 Eligible 中对应条目是同一 COM 对象，只遍历 Eligible 释放
+            if (_cached != null)
+            {
+                foreach (var entry in _cached.Eligible)
+                {
+                    try { entry.Adapter.Dispose(); } catch { }
+                }
+                _cached = null;
+            }
             _disposed = true;
         }
     }

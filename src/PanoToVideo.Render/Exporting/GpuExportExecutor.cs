@@ -83,7 +83,7 @@ public sealed class GpuExportExecutor : IExportExecutor
                 {
                     cancellationToken.ThrowIfCancellationRequested();
 
-                    double yaw = YawSchedule.YawAt(i, totalFrames, parameters.RotationDegrees, parameters.Direction);
+                    double yaw = YawSchedule.YawAt(i, totalFrames, parameters.RotationDegrees, parameters.Direction, parameters.StartYaw);
 
                     var ps = System.Diagnostics.Stopwatch.StartNew();
                     var nv12 = pipeline.RenderFrameToNv12(srv, _erpW, _erpH,
@@ -107,9 +107,9 @@ public sealed class GpuExportExecutor : IExportExecutor
                         encSec > 0 ? (i + 1) / encSec : 0,
                         sw.Elapsed));
                 }
-                // M5 修复：先 Finalize（MF flush 消化帧）再释放纹理池，避免访问已 Dispose 纹理
+                // M5 修复：先 Finish（MF flush 消化帧）再释放纹理池，避免访问已 Dispose 纹理
                 var tFinalize = System.Diagnostics.Stopwatch.StartNew();
-                encoder.Finalize();
+                encoder.Finish();
                 foreach (var t in nv12Pool) t?.Dispose();
                 tFinalize.Stop();
 

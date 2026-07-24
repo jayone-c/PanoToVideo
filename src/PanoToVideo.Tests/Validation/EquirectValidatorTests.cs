@@ -88,14 +88,14 @@ public class EquirectValidatorTests
     }
 
     [Fact]
-    public void Validate_宽小于6000_拒绝并含尺寸范围()
+    public void Validate_低于5000x2500_拒绝并含尺寸范围()
     {
         var info = new ImageInfo(4096, 2048, IsCorrupt: false, SourcePath: "h.jpg");
 
         var result = _sut.Validate(info);
 
         Assert.False(result.IsValid);
-        Assert.Contains("6000", result.Reason);
+        Assert.Contains("5000x2500", result.Reason);
     }
 
     [Fact]

@@ -82,6 +82,13 @@ public class YawScheduleTests
         Assert.Equal(0.0, YawSchedule.YawAt(0, 1, 360, RotationDirection.Clockwise));
     }
 
+    [Fact]
+    public void 指定起始方位_首帧与后续帧均在该方位基础上旋转()
+    {
+        Assert.Equal(120.0, YawSchedule.YawAt(0, 60, 360, RotationDirection.Clockwise, startYaw: 120.0));
+        Assert.Equal(114.0, YawSchedule.YawAt(1, 60, 360, RotationDirection.Counterclockwise, startYaw: 120.0));
+    }
+
     [Theory]
     [InlineData(360, true)]
     [InlineData(720, true)]

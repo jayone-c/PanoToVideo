@@ -23,10 +23,10 @@ public class OutputNamingTests
     }
 
     [Fact]
-    public void CombineExportsDir_拼接exports子目录()
+    public void CombineExportsDir_保留用户选择目录()
     {
         var dir = OutputNaming.CombineExportsDir("/base");
-        Assert.Equal(Path.Combine("/base", "exports"), dir);
+        Assert.Equal("/base", dir);
     }
 
     [Fact]

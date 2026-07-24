@@ -50,7 +50,8 @@ Console.WriteLine($"   探测耗时 {probeSw.Elapsed.TotalSeconds:F2}s");
 var parameters = new RenderParameters(
     DurationSeconds: 30, RotationDegrees: 360, Fps: 60,
     HorizontalFov: 75.0, Width: 1080, Height: 1920, Pitch: 0.0,
-    Direction: RotationDirection.Clockwise, AsteroidIntro: false);
+    Direction: RotationDirection.Clockwise, AsteroidIntro: false,
+    CpuCores: Environment.ProcessorCount);
 int totalFrames = parameters.TotalFrames; // 1800
 Console.WriteLine($"3. 基准任务: {erpW}x{erpH} -> {parameters.Width}x{parameters.Height}, {parameters.DurationSeconds}s@{parameters.Fps}FPS = {totalFrames}帧, 360°/{parameters.HorizontalFov}°FOV, H.264");
 

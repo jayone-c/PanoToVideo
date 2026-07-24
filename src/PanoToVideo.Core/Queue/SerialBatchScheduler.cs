@@ -15,9 +15,12 @@ namespace PanoToVideo.Core.Queue;
 public class SerialBatchScheduler
 {
     private readonly Func<QueueItem, byte[], int, int, IExportExecutor> _executorFactory;
-    private readonly Func<QueueItem, (byte[] Rgba, int W, int H)> _erpLoader;
+    private readonly Func<QueueItem, (byte[] Rgba, int W, int H)>? _erpLoader;
+    // P0-5：IErpLoader 按需解码重载，与旧 Func<> 重载二选一。非 null 时 RunItemAsync 用 using 自动 Dispose。
+    private readonly IErpLoader? _erpLoaderInterface;
     private volatile bool _paused;
-    private CancellationTokenSource? _currentTaskCts;
+    // M11: volatile 保证 CancelCurrent 跨线程读到最新值（RunItemAsync 后台线程写，UI 线程读）
+    private volatile CancellationTokenSource? _currentTaskCts;
 
     public bool IsPaused => _paused;
 
@@ -27,6 +30,20 @@ public class SerialBatchScheduler
     {
         _executorFactory = executorFactory;
         _erpLoader = erpLoader;
+        _erpLoaderInterface = null;
+    }
+
+    /// <summary>
+    /// P0-5 按需解码重载：传入 IErpLoader 后，RunItemAsync 对每项 Load 一次、
+    /// 项结束后 Dispose 一次，避免 100 张批量输入常驻 RGBA 内存。
+    /// </summary>
+    public SerialBatchScheduler(
+        Func<QueueItem, byte[], int, int, IExportExecutor> executorFactory,
+        IErpLoader erpLoader)
+    {
+        _executorFactory = executorFactory;
+        _erpLoader = null;
+        _erpLoaderInterface = erpLoader;
     }
 
     /// <summary>暂停队列：当前任务完成后停止启动下一项。</summary>
@@ -52,9 +69,13 @@ public class SerialBatchScheduler
     {
         foreach (var item in items)
         {
-            // 待校验 -> 待处理（RunItemAsync 假设已 Pending）
-            try { item.TransitionTo(TaskStatus.Pending); }
-            catch (InvalidOperationException) { continue; } // 已处理过的跳过
+            // UI 入队校验通过后已是 Pending；只有尚未校验的任务才需要转换。
+            // 旧逻辑对 Pending 再次调用 TransitionTo(Pending)，非法转换被吞掉后会永久跳过，
+            // 进而让上层等待循环持续看到“等待导出”。
+            if (item.Status == TaskStatus.PendingValidation)
+                item.TransitionTo(TaskStatus.Pending);
+            if (item.Status != TaskStatus.Pending)
+                continue; // 已完成/失败/取消项不重复执行
 
             await RunItemAsync(item, parameters, preset, outputDir, availableBytes, cancellationToken);
 
@@ -93,10 +114,25 @@ public class SerialBatchScheduler
         catch (InvalidOperationException) { return; } // 非法状态（如已完成）跳过
 
         _currentTaskCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        // P0-5：接口模式下 erp 必须存活到 executor 返回后再释放（rgba 在执行期间被引用），
+        // 故提升到 try 外，由 finally 显式 Dispose。
+        LoadedErp? erpResource = null;
         try
         {
-            // 加载 ERP（App 层解码）
-            var (rgba, w, h) = _erpLoader(item);
+            // 加载 ERP（App 层解码）。P0-5：接口模式下按需加载，用完即释放，避免批量常驻。
+            byte[] rgba;
+            int w, h;
+            if (_erpLoaderInterface is not null)
+            {
+                erpResource = _erpLoaderInterface.Load(item);
+                rgba = erpResource.Rgba;
+                w = erpResource.Width;
+                h = erpResource.Height;
+            }
+            else
+            {
+                (rgba, w, h) = _erpLoader!(item);
+            }
             var imageInfo = new ImageInfo(w, h, false, item.SourceFileName);
 
             var executor = _executorFactory(item, rgba, w, h);
@@ -141,6 +177,7 @@ public class SerialBatchScheduler
         }
         finally
         {
+            erpResource?.Dispose();
             _currentTaskCts?.Dispose();
             _currentTaskCts = null;
         }
