@@ -1,10 +1,12 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using PanoToVideo.Core.Exporting;
 using PanoToVideo.Core.Naming;
 using PanoToVideo.Core.Parameters;
@@ -45,9 +47,22 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private TaskCompletionSource? _resumeGate;
     private bool _isPaused;
     private Task<GpuAvailability>? _gpuAvailabilityTask;
+    private Task<FfmpegAvailability>? _ffmpegAvailabilityTask;
     private ImageSource? _previewImage;
     private string _previewStatus = "添加图片后显示镜头预览";
+    private double _previewTimeSeconds;
     private int _previewVersion;
+    private bool _isPreviewRendering;
+    private bool _previewRenderPending;
+    private string? _previewErpPath;
+    private PreviewErp? _previewErp;
+    private Task<PreviewErp>? _previewErpLoadTask;
+    private readonly DispatcherTimer _previewPlaybackTimer;
+    private readonly Stopwatch _previewPlaybackClock = new();
+    private bool _isPreviewPlaying;
+    // 播放必须先把 0 秒帧实际绘制到界面；否则慢设备上计时器会先推进，用户看不到起始方位。
+    private bool _startPlaybackAfterInitialFrame;
+    private int _previewPlaybackRateIndex;
     private readonly int? _autoDetectedCpuCores = TryDetectCpuCores();
     private bool _isCustomResolution;
     private PresetResolveResult? _lastPreset; // H9/M15: 缓存首次预设，重试复用保持一致
@@ -82,13 +97,28 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         ResumeCommand = new AsyncRelayCommand(ResumeAsync, () => IsExporting && IsPaused);
         CancelCurrentCommand = new RelayCommand(() => _scheduler?.CancelCurrent(), () => IsExporting);
         RetryFailedCommand = new AsyncRelayCommand(RetryAllFailedAsync, () => !IsExporting && QueueItems.Any(i => i.Status == TaskStatus.Failed));
+        TogglePreviewPlaybackCommand = new RelayCommand(TogglePreviewPlayback);
+        ResetPreviewPlaybackCommand = new RelayCommand(ResetPreviewPlayback);
+        _previewPlaybackTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
+        _previewPlaybackTimer.Tick += PreviewPlaybackTimer_Tick;
         OutputDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "PanoToVideo");
         UpdateSeamlessHint();
         _ = RefreshDeviceInfoAsync();
     }
 
     // 参数绑定
-    public int DurationSeconds { get => _settings.RenderParameters.DurationSeconds; set => SetParam(p => p with { DurationSeconds = value }); }
+    public int DurationSeconds
+    {
+        get => _settings.RenderParameters.DurationSeconds;
+        set
+        {
+            SetParam(p => p with { DurationSeconds = value });
+            NormalizeRotationTempo();
+            OnRotationTempoChanged();
+            if (PreviewTimeSeconds > value) PreviewTimeSeconds = value;
+            else OnPropertyChanged(nameof(PreviewTimeLabel));
+        }
+    }
     public int RotationDegrees { get => _settings.RenderParameters.RotationDegrees; set => SetParam(p => p with { RotationDegrees = value }); }
     public int Fps { get => _settings.RenderParameters.Fps; set => SetParam(p => p with { Fps = value }); }
     public double HorizontalFov
@@ -114,6 +144,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     }
     public int PitchDegrees { get => (int)Math.Round(Pitch); set => Pitch = value; }
     public double StartYaw { get => _settings.RenderParameters.StartYaw; set => SetParam(p => p with { StartYaw = value }); }
+    public bool IsRotationTempoEnabled { get => CurrentRotationTempo.Enabled; set => SetRotationTempo(t => t with { Enabled = value }); }
+    public int SlowRotationStartSeconds { get => CurrentRotationTempo.StartSeconds; set => SetRotationTempo(t => t with { StartSeconds = value }); }
+    public int SlowTransitionSeconds { get => CurrentRotationTempo.TransitionSeconds; set => SetRotationTempo(t => t with { TransitionSeconds = value }); }
+    public int SlowHoldSeconds { get => CurrentRotationTempo.HoldSeconds; set => SetRotationTempo(t => t with { HoldSeconds = value }); }
+    public int SlowSpeedPercent { get => CurrentRotationTempo.SlowSpeedPercent; set => SetRotationTempo(t => t with { SlowSpeedPercent = value }); }
+    public int SlowRotationStartMaximum => Math.Max(0, DurationSeconds - 2 * SlowTransitionSeconds - SlowHoldSeconds);
+    public int SlowTransitionMaximum => Math.Max(1, (DurationSeconds - SlowRotationStartSeconds - SlowHoldSeconds) / 2);
+    public int SlowHoldMaximum => Math.Max(0, DurationSeconds - SlowRotationStartSeconds - 2 * SlowTransitionSeconds);
+    public string RotationTempoSummary => !IsRotationTempoEnabled
+        ? "关闭后保持匀速旋转。"
+        : $"第 {SlowRotationStartSeconds} 秒开始，平滑减速 {SlowTransitionSeconds} 秒，慢转 {SlowHoldSeconds} 秒后平滑恢复；慢转速度为正常段的 {SlowSpeedPercent}%。";
     public int CpuCores { get => _settings.RenderParameters.CpuCores; set => SetParam(p => p with { CpuCores = value }); }
     /// <summary>当前设备自动探测到的逻辑 CPU 核心数；CPU 回退默认使用该值。</summary>
     public int? AutoDetectedCpuCores => _autoDetectedCpuCores;
@@ -147,7 +188,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
-    /// <summary>竖屏输出分辨率：1080P、720P、2K 或自定义。</summary>
+    /// <summary>输出分辨率：1080P、2K、720P 或自定义。</summary>
     public int ResolutionPresetIndex
     {
         get => _isCustomResolution ? 3 : Math.Max(0, GetMatchingResolutionPresetIndex(Width, Height));
@@ -230,13 +271,55 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public string FallbackHint { get => _fallbackHint; set { _fallbackHint = value; OnPropertyChanged(); } }
     public string SeamlessHint { get; private set; } = "";
     public string PresetFallbackHint { get; private set; } = "";
-    public int SelectedQueueIndex { get => _selectedQueueIndex; set { _selectedQueueIndex = value; OnPropertyChanged(); RetryCommand.RaiseCanExecuteChanged(); RemoveSelectedCommand.RaiseCanExecuteChanged(); RefreshPreview(); } }
+    public int SelectedQueueIndex { get => _selectedQueueIndex; set { StopPreviewPlayback(); _selectedQueueIndex = value; OnPropertyChanged(); RetryCommand.RaiseCanExecuteChanged(); RemoveSelectedCommand.RaiseCanExecuteChanged(); RefreshPreview(); } }
     public int CompletedCount { get => _completedCount; set { _completedCount = value; OnPropertyChanged(); } }
     public int FailedCount { get => _failedCount; set { _failedCount = value; OnPropertyChanged(); } }
     public double TotalProgressPercent { get => _totalProgressPercent; set { _totalProgressPercent = value; OnPropertyChanged(); } }
     public ImageSource? PreviewImage { get => _previewImage; private set { _previewImage = value; OnPropertyChanged(); } }
     public string PreviewStatus { get => _previewStatus; private set { _previewStatus = value; OnPropertyChanged(); } }
-    public string PreviewMotionHint => $"从 {StartYaw:F0}° 起始，以{(DirectionIndex == 0 ? "顺时针" : "逆时针")}旋转 {RotationDegrees}°";
+    /// <summary>预览时间轴位置；拖动后按实际导出方位重新生成静态预览。</summary>
+    public double PreviewTimeSeconds
+    {
+        get => _previewTimeSeconds;
+        set
+        {
+            var clamped = Math.Clamp(value, 0, (double)DurationSeconds);
+            if (Math.Abs(_previewTimeSeconds - clamped) < 0.001) return;
+            _previewTimeSeconds = clamped;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(PreviewTimeLabel));
+            RefreshPreview();
+        }
+    }
+    public string PreviewTimeLabel => $"预览时间 {PreviewTimeSeconds:F1} / {DurationSeconds} 秒";
+    public bool IsPreviewPlaying
+    {
+        get => _isPreviewPlaying;
+        private set
+        {
+            _isPreviewPlaying = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(PreviewPlayButtonText));
+        }
+    }
+    public int PreviewPlaybackRateIndex
+    {
+        get => _previewPlaybackRateIndex;
+        set
+        {
+            var index = Math.Clamp(value, 0, 1);
+            if (_previewPlaybackRateIndex == index) return;
+            _previewPlaybackRateIndex = index;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(PreviewPlaybackRate));
+        }
+    }
+    public double PreviewPlaybackRate => PreviewPlaybackRateIndex == 0 ? 1 : 2;
+    public string PreviewPlayButtonText => IsPreviewPlaying ? "暂停" : "播放";
+    /// <summary>横屏预览使用更宽的画面区，避免等比缩放后只剩一条窄画面。</summary>
+    public GridLength PreviewPanelWidth => new(IsLandscapeOutput ? 320 : 190);
+    public string PreviewMotionHint => $"从 {StartYaw:F0}° 起始，以{(DirectionIndex == 0 ? "顺时针" : "逆时针")}旋转 {RotationDegrees}°"
+        + (IsRotationTempoEnabled ? $" · 第 {SlowRotationStartSeconds} 秒进入慢转" : "");
     public string ExportSummary
     {
         get
@@ -247,7 +330,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             var bytes = ExportPrecheck.EstimateBytes(_settings.Preset, Width, Height, Fps, DurationSeconds) * QueueItems.Count;
             var size = bytes >= 1024L * 1024 * 1024 ? $"{bytes / 1024d / 1024 / 1024:F1} GB" : $"{bytes / 1024d / 1024:F0} MB";
             var fileText = QueueItems.Count == 1 ? name : $"首个：{name}（共 {QueueItems.Count} 个）";
-            return $"{fileText}\n保存到：{OutputDir}\n预计总大小：{size} · {EncoderInfo}";
+            var totalDuration = TimeSpan.FromSeconds((long)DurationSeconds * QueueItems.Count);
+            var durationText = totalDuration.TotalHours >= 1 ? totalDuration.ToString(@"h\:mm\:ss") : totalDuration.ToString(@"m\:ss");
+            return $"{fileText}\n保存到：{OutputDir}\n成片总时长：{durationText}\n预计总大小：{size} · {EncoderInfo}";
         }
     }
 
@@ -264,6 +349,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public AsyncRelayCommand ResumeCommand { get; }
     public RelayCommand CancelCurrentCommand { get; }
     public AsyncRelayCommand RetryFailedCommand { get; }
+    public RelayCommand TogglePreviewPlaybackCommand { get; }
+    public RelayCommand ResetPreviewPlaybackCommand { get; }
 
     // L10: 精确属性通知，避免 OnPropertyChanged(string.Empty) 全量刷新
     private void SetParam(Func<RenderParameters, RenderParameters> update, [CallerMemberName] string? name = null)
@@ -273,8 +360,60 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(ExportSummary));
         SaveSettings();
         UpdateSeamlessHint();
-        if (name is nameof(HorizontalFov) or nameof(Pitch) or nameof(StartYaw)) RefreshPreview();
+        if (name is nameof(HorizontalFov) or nameof(Pitch) or nameof(StartYaw) or nameof(RotationDegrees)
+            or nameof(DirectionIndex) or nameof(Fps) or nameof(DurationSeconds)) RefreshPreview();
         if (name is nameof(RotationDegrees) or nameof(StartYaw)) OnPropertyChanged(nameof(PreviewMotionHint));
+    }
+
+    private RotationTempo CurrentRotationTempo => _settings.RenderParameters.RotationTempo ?? new RotationTempo();
+
+    private void SetRotationTempo(Func<RotationTempo, RotationTempo> update)
+    {
+        var next = ClampRotationTempo(update(CurrentRotationTempo), DurationSeconds);
+        _settings = _settings with { RenderParameters = _settings.RenderParameters with { RotationTempo = next } };
+        OnRotationTempoChanged();
+        SaveSettings();
+        RefreshPreview();
+    }
+
+    private void NormalizeRotationTempo()
+    {
+        var current = CurrentRotationTempo;
+        var next = ClampRotationTempo(current, DurationSeconds);
+        if (next == current) return;
+        _settings = _settings with { RenderParameters = _settings.RenderParameters with { RotationTempo = next } };
+        OnRotationTempoChanged();
+        SaveSettings();
+    }
+
+    private static RotationTempo ClampRotationTempo(RotationTempo tempo, int durationSeconds)
+    {
+        var duration = Math.Max(1, durationSeconds);
+        var transition = Math.Clamp(tempo.TransitionSeconds, 1, Math.Max(1, duration / 2));
+        var start = Math.Clamp(tempo.StartSeconds, 0, Math.Max(0, duration - 2 * transition));
+        var hold = Math.Clamp(tempo.HoldSeconds, 0, Math.Max(0, duration - start - 2 * transition));
+        return tempo with
+        {
+            Enabled = tempo.Enabled && duration >= 2,
+            StartSeconds = start,
+            TransitionSeconds = transition,
+            HoldSeconds = hold,
+            SlowSpeedPercent = Math.Clamp(tempo.SlowSpeedPercent, 10, 90),
+        };
+    }
+
+    private void OnRotationTempoChanged()
+    {
+        OnPropertyChanged(nameof(IsRotationTempoEnabled));
+        OnPropertyChanged(nameof(SlowRotationStartSeconds));
+        OnPropertyChanged(nameof(SlowTransitionSeconds));
+        OnPropertyChanged(nameof(SlowHoldSeconds));
+        OnPropertyChanged(nameof(SlowSpeedPercent));
+        OnPropertyChanged(nameof(SlowRotationStartMaximum));
+        OnPropertyChanged(nameof(SlowTransitionMaximum));
+        OnPropertyChanged(nameof(SlowHoldMaximum));
+        OnPropertyChanged(nameof(RotationTempoSummary));
+        OnPropertyChanged(nameof(PreviewMotionHint));
     }
 
     private void SetCustomDimension(Func<RenderParameters, RenderParameters> update, [CallerMemberName] string? name = null)
@@ -285,6 +424,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(IsCustomResolution));
         OnPropertyChanged(nameof(OutputOrientationIndex));
         OnPropertyChanged(nameof(IsLandscapeOutput));
+        OnPropertyChanged(nameof(PreviewPanelWidth));
+        RefreshPreview();
     }
 
     private void SetDimensions(int width, int height)
@@ -296,16 +437,18 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(IsCustomResolution));
         OnPropertyChanged(nameof(OutputOrientationIndex));
         OnPropertyChanged(nameof(IsLandscapeOutput));
+        OnPropertyChanged(nameof(PreviewPanelWidth));
         OnPropertyChanged(nameof(ExportSummary));
         SaveSettings();
+        RefreshPreview();
     }
 
     private void SetDimensionsForPreset(int presetIndex, bool landscape)
     {
         var (shortEdge, longEdge) = presetIndex switch
         {
-            1 => (720, 1280),
-            2 => (1440, 2560),
+            1 => (1440, 2560),
+            2 => (720, 1280),
             _ => (1080, 1920),
         };
         SetDimensions(landscape ? longEdge : shortEdge, landscape ? shortEdge : longEdge);
@@ -314,8 +457,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private static int GetMatchingResolutionPresetIndex(int width, int height) => (width, height) switch
     {
         (1080, 1920) or (1920, 1080) => 0,
-        (720, 1280) or (1280, 720) => 1,
-        (1440, 2560) or (2560, 1440) => 2,
+        (1440, 2560) or (2560, 1440) => 1,
+        (720, 1280) or (1280, 720) => 2,
         _ => -1,
     };
 
@@ -427,6 +570,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         if (QueueItems.Count == 0) return;
         if (MessageBox.Show("确定清空全部待导出图片吗？", "清空导出队列", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        StopPreviewPlayback();
         foreach (var item in _items) item.PropertyChanged -= QueueItem_PropertyChanged;
         _items.Clear();
         _itemPaths.Clear();
@@ -459,6 +603,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         try
         {
             if (showProbingState) DeviceInfo = "正在探测设备…";
+            var ffmpeg = await GetFfmpegAvailabilityAsync();
+            if (!ffmpeg.IsAvailable)
+            {
+                ApplyFfmpegUnavailable(ffmpeg, updateStatus: showProbingState);
+                return;
+            }
+
             var (_, presetResult, decision) = await ProbeExportDecisionAsync();
             _lastPreset = presetResult;
             PresetFallbackHint = presetResult.FallbackReason ?? "";
@@ -475,6 +626,20 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private Task<GpuAvailability> GetGpuAvailabilityAsync()
     {
         return _gpuAvailabilityTask ??= Task.Run(() => new RenderFallbackDecisionProbe().Probe());
+    }
+
+    private Task<FfmpegAvailability> GetFfmpegAvailabilityAsync()
+    {
+        return _ffmpegAvailabilityTask ??= Task.Run(() => FfmpegCapabilityProbe.Availability);
+    }
+
+    private void ApplyFfmpegUnavailable(FfmpegAvailability availability, bool updateStatus)
+    {
+        DeviceInfo = "未检测到 FFmpeg";
+        EncoderInfo = "请安装 FFmpeg";
+        PresetFallbackHint = "";
+        FallbackHint = availability.UserMessage;
+        if (updateStatus) StatusText = availability.UserMessage;
     }
 
     private async Task<(GpuAvailability Gpu, PresetResolveResult PresetResult, FallbackDecision Decision)> ProbeExportDecisionAsync()
@@ -506,23 +671,51 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
-    private async void RefreshPreview()
+    private void RefreshPreview()
     {
         var version = ++_previewVersion;
-        if (SelectedQueueIndex < 0 || SelectedQueueIndex >= QueueItems.Count || !_itemPaths.TryGetValue(QueueItems[SelectedQueueIndex], out var path))
+        if (_isPreviewRendering)
         {
-            PreviewImage = null;
-            PreviewStatus = "添加图片后显示镜头预览";
+            _previewRenderPending = true;
             return;
         }
 
-        PreviewStatus = "正在生成起始画面预览…";
+        _ = RefreshPreviewAsync(version);
+    }
+
+    private async Task RefreshPreviewAsync(int version)
+    {
+        _isPreviewRendering = true;
         try
         {
-            var image = await Task.Run(() => RenderPreview(path, HorizontalFov, Pitch, StartYaw));
+            if (SelectedQueueIndex < 0 || SelectedQueueIndex >= QueueItems.Count || !_itemPaths.TryGetValue(QueueItems[SelectedQueueIndex], out var path))
+            {
+                PreviewImage = null;
+                PreviewStatus = "添加图片后显示镜头预览";
+                return;
+            }
+
+            var parameters = _settings.RenderParameters;
+            var previewTime = Math.Clamp(PreviewTimeSeconds, 0, (double)parameters.DurationSeconds);
+            var frameIndex = parameters.TotalFrames <= 1
+                ? 0
+                : (int)Math.Round(previewTime / parameters.DurationSeconds * (parameters.TotalFrames - 1));
+            var yaw = YawSchedule.YawAt(frameIndex, parameters);
+            PreviewStatus = IsPreviewPlaying ? "正在播放预览…" : "正在生成时间轴预览…";
+
+            var erp = await GetPreviewErpAsync(path);
+            var image = await Task.Run(() => RenderPreview(erp, parameters.HorizontalFov, parameters.Pitch, yaw, parameters.Width, parameters.Height));
             if (version != _previewVersion) return;
             PreviewImage = image;
-            PreviewStatus = $"起始画面 · FOV {HorizontalFov:F0}° · 俯仰 {Pitch:F0}°";
+            PreviewStatus = $"第 {previewTime:F1} 秒 · 方位 {yaw:F0}° · FOV {parameters.HorizontalFov:F0}°";
+
+            // 起始帧提交到 UI 后才启动时钟。预览渲染是异步且会合并连续请求，若在这里之前启动，
+            // 0 秒帧很容易被后续时间点的请求取代，表现为“起始方位没有生效”。
+            if (_startPlaybackAfterInitialFrame && previewTime <= 0.001 && PreviewTimeSeconds <= 0.001)
+            {
+                _startPlaybackAfterInitialFrame = false;
+                StartPreviewPlaybackClock();
+            }
         }
         catch
         {
@@ -530,9 +723,35 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             PreviewImage = null;
             PreviewStatus = "无法生成预览，但不影响导出";
         }
+        finally
+        {
+            _isPreviewRendering = false;
+            if (_previewRenderPending)
+            {
+                _previewRenderPending = false;
+                RefreshPreview();
+            }
+        }
     }
 
-    private static BitmapSource RenderPreview(string path, double fov, double pitch, double startYaw = 0.0)
+    private async Task<PreviewErp> GetPreviewErpAsync(string path)
+    {
+        if (_previewErpPath == path)
+        {
+            if (_previewErp is not null) return _previewErp;
+            if (_previewErpLoadTask is not null) return await _previewErpLoadTask;
+        }
+
+        _previewErpPath = path;
+        _previewErp = null;
+        var loadTask = Task.Run(() => LoadPreviewErp(path));
+        _previewErpLoadTask = loadTask;
+        var erp = await loadTask;
+        if (_previewErpPath == path) _previewErp = erp;
+        return erp;
+    }
+
+    private static PreviewErp LoadPreviewErp(string path)
     {
         var original = new BitmapImage();
         original.BeginInit();
@@ -556,9 +775,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             erp[y * erpWidth + x] = new Rgb(sourcePixels[offset + 2], sourcePixels[offset + 1], sourcePixels[offset]);
         }
 
-        const int previewWidth = 180;
-        const int previewHeight = 320;
-        var frame = EquirectRenderer.RenderFrame(erp, erpWidth, erpHeight, previewWidth, previewHeight, fov, startYaw, pitch);
+        return new PreviewErp(erp, erpWidth, erpHeight);
+    }
+
+    private static BitmapSource RenderPreview(PreviewErp erp, double fov, double pitch, double yaw, int outputWidth, int outputHeight)
+    {
+        // 横屏预览栏更宽，预览位图也相应加大，避免被 WPF 二次放大后模糊。
+        var maxPreviewSide = outputWidth > outputHeight ? 384 : 320;
+        var (previewWidth, previewHeight) = PreviewSizing.Fit(outputWidth, outputHeight, maxPreviewSide);
+        var frame = EquirectRenderer.RenderFrame(erp.Pixels, erp.Width, erp.Height, previewWidth, previewHeight, fov, yaw, pitch);
         var pixels = new byte[previewWidth * previewHeight * 4];
         for (var i = 0; i < frame.Length; i++)
         {
@@ -573,6 +798,61 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         return source;
     }
 
+    private void TogglePreviewPlayback()
+    {
+        if (SelectedQueueIndex < 0 || SelectedQueueIndex >= QueueItems.Count) return;
+        if (IsPreviewPlaying)
+        {
+            StopPreviewPlayback();
+            return;
+        }
+
+        if (PreviewTimeSeconds <= 0.001 || PreviewTimeSeconds >= DurationSeconds)
+        {
+            if (PreviewTimeSeconds >= DurationSeconds) PreviewTimeSeconds = 0;
+            _startPlaybackAfterInitialFrame = true;
+            PreviewStatus = "正在定位起始方位…";
+            // 即使当前本来就是 0 秒，也要强制重新渲染；等待该帧提交后再启动计时器。
+            RefreshPreview();
+            return;
+        }
+
+        StartPreviewPlaybackClock();
+    }
+
+    private void StartPreviewPlaybackClock()
+    {
+        _previewPlaybackClock.Restart();
+        IsPreviewPlaying = true;
+        _previewPlaybackTimer.Start();
+    }
+
+    private void ResetPreviewPlayback()
+    {
+        StopPreviewPlayback();
+        if (PreviewTimeSeconds == 0) RefreshPreview();
+        else PreviewTimeSeconds = 0;
+    }
+
+    private void StopPreviewPlayback()
+    {
+        _startPlaybackAfterInitialFrame = false;
+        _previewPlaybackTimer?.Stop();
+        _previewPlaybackClock.Stop();
+        if (IsPreviewPlaying) IsPreviewPlaying = false;
+    }
+
+    private void PreviewPlaybackTimer_Tick(object? sender, EventArgs e)
+    {
+        var elapsed = _previewPlaybackClock.Elapsed.TotalSeconds;
+        _previewPlaybackClock.Restart();
+        var next = PreviewPlaybackTimeline.Advance(PreviewTimeSeconds, elapsed, PreviewPlaybackRate, DurationSeconds);
+        PreviewTimeSeconds = next.TimeSeconds;
+        if (next.HasReachedEnd) StopPreviewPlayback();
+    }
+
+    private sealed record PreviewErp(Rgb[] Pixels, int Width, int Height);
+
     private async Task ExportAsync()
     {
         if (QueueItems.Count == 0 || string.IsNullOrEmpty(OutputDir)) return;
@@ -586,6 +866,18 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         try
         {
+            var ffmpeg = await GetFfmpegAvailabilityAsync();
+            if (!ffmpeg.IsAvailable)
+            {
+                ApplyFfmpegUnavailable(ffmpeg, updateStatus: true);
+                MessageBox.Show(
+                    $"{ffmpeg.UserMessage}\n\n安装完成后，请关闭并重新打开本程序。",
+                    "无法开始导出",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+
             // P0-1：GPU 可用性探测 + 回退决策（后台线程，避免 UI 冻结）
             StatusText = "探测设备与编码器...";
             var (gpu, presetResult, decision) = await ProbeExportDecisionAsync();
@@ -622,9 +914,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             // P0-1：executorFactory 按回退决策选择执行器
             var hevcAvailable = decision.Backend == ExportBackend.GpuNvenc && gpu.HasHevcEncoder;
             _scheduler = new SerialBatchScheduler(
-                executorFactory: (item, rgba, w, h) => decision.Backend == ExportBackend.CpuFallback
-                    ? new FfmpegCpuFallbackExecutor(rgba, w, h, _settings.RenderParameters, presetResult.Preset)
-                    : new FfmpegNvencExecutor(rgba, w, h, _settings.RenderParameters, presetResult.Preset, hevcAvailable: hevcAvailable),
+                executorFactory: (item, rgba, w, h) =>
+                {
+                    var cpu = new FfmpegCpuFallbackExecutor(rgba, w, h, _settings.RenderParameters, presetResult.Preset);
+                    if (decision.Backend == ExportBackend.CpuFallback) return cpu;
+                    var hardware = new FfmpegNvencExecutor(rgba, w, h, _settings.RenderParameters, presetResult.Preset,
+                        hevcAvailable: hevcAvailable,
+                        hardwareEncoder: decision.HardwareEncoder ?? HardwareEncoderKind.Nvenc);
+                    return new FallbackExportExecutor(hardware, cpu);
+                },
                 erpLoader: erpLoader);
 
             long avail = GetAvailableBytes(OutputDir);
@@ -635,6 +933,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
             CompletedCount = _items.Count(i => i.Status == TaskStatus.Completed);
             FailedCount = _items.Count(i => i.Status == TaskStatus.Failed);
+            var cpuFallbackCount = _items.Count(i => i.UsedCpuFallback);
+            if (cpuFallbackCount > 0)
+            {
+                DeviceInfo = cpuFallbackCount == CompletedCount ? "CPU" : "GPU / CPU 混合";
+                EncoderInfo = cpuFallbackCount == CompletedCount ? "libx264" : $"{cpuFallbackCount} 项使用 CPU 回退";
+                FallbackHint = $"{cpuFallbackCount} 项硬件导出失败后已自动使用 CPU 完成。";
+            }
             TotalProgressPercent = 100;
             var firstFailure = _items.FirstOrDefault(i => i.Status == TaskStatus.Failed);
             StatusText = _cts.IsCancellationRequested
@@ -829,6 +1134,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public void Dispose()
     {
         // H10: 关窗先取消进行中的导出，避免后台 Task 访问已 Dispose 的 _cts
+        StopPreviewPlayback();
         try { _cts?.Cancel(); } catch { }
         _cts?.Dispose();
     }

@@ -22,7 +22,8 @@ public sealed class QueueProgress
         {
             var remaining = TotalFrames - FramesDone;
             if (remaining <= 0) return TimeSpan.Zero;
-            var fps = Math.Min(ProjectionFps, EncodingFps);
+            // CPU 回退路径没有独立编码 FPS，使用投影 FPS 仍可给出有效 ETA。
+            var fps = EncodingFps > 0 ? Math.Min(ProjectionFps, EncodingFps) : ProjectionFps;
             if (fps <= 0) return null;
             return TimeSpan.FromSeconds(remaining / fps);
         }

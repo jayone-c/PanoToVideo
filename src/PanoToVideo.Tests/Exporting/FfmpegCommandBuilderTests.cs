@@ -9,6 +9,17 @@ namespace PanoToVideo.Tests.Exporting;
 /// </summary>
 public class FfmpegCommandBuilderTests
 {
+    [Fact]
+    public void BuildGpuHardware_AMF与QSV_使用对应硬件编码器()
+    {
+        var amf = FfmpegCommandBuilder.BuildGpuHardware(Tmp, W, H, Fps, Bitrate, ExportPreset.Compatibility, false, HardwareEncoderKind.Amf);
+        var qsv = FfmpegCommandBuilder.BuildGpuHardware(Tmp, W, H, Fps, Bitrate, ExportPreset.Size, true, HardwareEncoderKind.Qsv);
+
+        Assert.Contains("h264_amf", amf.Args);
+        Assert.Equal("H.264 AMF", amf.CodecLabel);
+        Assert.Contains("hevc_qsv", qsv.Args);
+        Assert.Equal("H.265 QSV", qsv.CodecLabel);
+    }
     private const string Tmp = "/tmp/out.tmp.mp4";
     private const int W = 1080;
     private const int H = 1920;

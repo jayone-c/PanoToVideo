@@ -67,20 +67,45 @@ public sealed class RenderFallbackDecisionProbe : IFallbackDecisionProbe
             hasHevc = false;
         }
 
-        // MF 可激活不代表当前 FFmpeg 构建也带有对应 NVENC 编码器；生产路径需要两者均满足。
-        var hasH264Nvenc = FfmpegCapabilityProbe.HasEncoder("h264_nvenc");
-        hasHevc &= FfmpegCapabilityProbe.HasEncoder("hevc_nvenc");
+        // MF 可激活不代表当前 FFmpeg 构建带有同厂商硬件编码器；生产路径两者均须满足。
+        var h264Encoder = FindEncoderForDevice(preferred.Candidate.Description, hevc: false);
+        var hevcEncoder = hasHevc ? FindEncoderForDevice(preferred.Candidate.Description, hevc: true) : null;
 
         s_cached = new GpuAvailability(
             HasGpu: true,
-            HasH264Encoder: hasH264Nvenc,
-            HasHevcEncoder: hasHevc,
+            HasH264Encoder: h264Encoder is not null,
+            HasHevcEncoder: hevcEncoder is not null,
             PreferredDeviceDescription: preferred.Candidate.Description,
-            FallbackReason: hasH264Nvenc ? null : "当前 FFmpeg 未提供 h264_nvenc 编码器",
+            FallbackReason: h264Encoder is not null ? null : "当前 FFmpeg 未提供与所选 GPU 匹配的 H.264 硬件编码器",
             DedicatedVideoMemoryBytes: preferred.Candidate.DedicatedVideoMemoryBytes > long.MaxValue
                 ? long.MaxValue
-                : (long)preferred.Candidate.DedicatedVideoMemoryBytes);
+                : (long)preferred.Candidate.DedicatedVideoMemoryBytes,
+            H264HardwareEncoder: h264Encoder,
+            HevcHardwareEncoder: hevcEncoder);
         return s_cached;
+    }
+
+    private static HardwareEncoderKind? FindEncoderForDevice(string deviceDescription, bool hevc)
+    {
+        var candidates = deviceDescription.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase)
+            ? new[] { HardwareEncoderKind.Nvenc }
+            : deviceDescription.Contains("AMD", StringComparison.OrdinalIgnoreCase) || deviceDescription.Contains("Radeon", StringComparison.OrdinalIgnoreCase)
+                ? new[] { HardwareEncoderKind.Amf }
+                : deviceDescription.Contains("Intel", StringComparison.OrdinalIgnoreCase)
+                    ? new[] { HardwareEncoderKind.Qsv }
+                    : new[] { HardwareEncoderKind.Nvenc, HardwareEncoderKind.Amf, HardwareEncoderKind.Qsv };
+
+        foreach (var kind in candidates)
+        {
+            var family = kind switch
+            {
+                HardwareEncoderKind.Amf => "amf",
+                HardwareEncoderKind.Qsv => "qsv",
+                _ => "nvenc",
+            };
+            if (FfmpegCapabilityProbe.HasEncoder($"{(hevc ? "hevc" : "h264")}_{family}")) return kind;
+        }
+        return null;
     }
 
     /// <summary>重置静态缓存（测试用：强制下次 Probe 重新探测）。</summary>

@@ -48,10 +48,24 @@ public static class FfmpegCommandBuilder
     public static FfmpegCommand BuildGpuNvenc(
         string tmpPath, int outW, int outH, int fps, uint bitrate,
         ExportPreset resolvedPreset, bool hevcAvailable)
+        => BuildGpuHardware(tmpPath, outW, outH, fps, bitrate, resolvedPreset, hevcAvailable, HardwareEncoderKind.Nvenc);
+
+    /// <summary>
+    /// GPU 路径：stdin NV12 → 当前设备对应的 NVENC / AMF / QSV 硬件编码器。
+    /// </summary>
+    public static FfmpegCommand BuildGpuHardware(
+        string tmpPath, int outW, int outH, int fps, uint bitrate,
+        ExportPreset resolvedPreset, bool hevcAvailable, HardwareEncoderKind hardwareEncoder)
     {
         bool useHevc = resolvedPreset == ExportPreset.Size && hevcAvailable;
-        string codec = useHevc ? "hevc_nvenc" : "h264_nvenc";
-        string label = useHevc ? "H.265 NVENC" : "H.264 NVENC";
+        string family = hardwareEncoder switch
+        {
+            HardwareEncoderKind.Amf => "amf",
+            HardwareEncoderKind.Qsv => "qsv",
+            _ => "nvenc",
+        };
+        string codec = useHevc ? $"hevc_{family}" : $"h264_{family}";
+        string label = $"H.{(useHevc ? "265" : "264")} {FallbackDecider.HardwareEncoderLabel(hardwareEncoder)}";
 
         var args = CommonInputArgs("nv12", outW, outH, fps);
         args.Add("-c:v"); args.Add(codec);

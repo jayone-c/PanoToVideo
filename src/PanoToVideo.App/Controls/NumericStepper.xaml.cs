@@ -5,7 +5,7 @@ using System.Windows.Input;
 namespace PanoToVideo.App.Controls;
 
 /// <summary>
-/// 整数步进输入：通过上下按钮调整，文本输入仅在明确启用时开放，避免小数和非法字符进入参数模型。
+/// 整数步进输入：保留上下按钮；启用文本输入时，会在确认输入后自动归整为范围内的合法整数。
 /// </summary>
 public partial class NumericStepper : UserControl
 {
@@ -108,6 +108,26 @@ public partial class NumericStepper : UserControl
         var box = (TextBox)sender;
         var candidate = box.Text.Remove(box.SelectionStart, box.SelectionLength).Insert(box.SelectionStart, e.Text);
         e.Handled = candidate != "-" && !int.TryParse(candidate, out _);
+    }
+
+    private void NumericTextBox_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e) => NormalizeTextInput();
+
+    private void NumericTextBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter) return;
+        NormalizeTextInput();
+        e.Handled = true;
+    }
+
+    private void NormalizeTextInput()
+    {
+        if (!AllowTextInput || IsReadOnly) return;
+
+        if (int.TryParse(NumericTextBox.Text, out var parsed))
+            Value = parsed; // Value 的 CoerceValue 负责限制到最小/最大合法整数。
+
+        // 解析失败时恢复旧值；超出范围时显示已归整后的实际值。
+        NumericTextBox.Text = Value.ToString();
     }
 
     private void OnPaste(object sender, DataObjectPastingEventArgs e)

@@ -33,6 +33,8 @@ public sealed class RenderParametersValidator
             errors.Add($"俯仰角必须在 [-85, 85]，实际 {p.Pitch}");
         if (p.StartYaw < 0.0 || p.StartYaw >= 360.0)
             errors.Add($"起始方位必须在 [0, 360) 内，实际 {p.StartYaw}");
+        if (p.RotationTempo is { Enabled: true } tempo && !tempo.IsUsableFor(p.DurationSeconds))
+            errors.Add("镜头节奏需满足：开始时间、两段平滑过渡和慢转维持时间之和不能超过视频时长；慢转速度为 10%–90%。");
 
         var effectiveMax = maxCores > 0 ? maxCores : Environment.ProcessorCount;
         if (p.CpuCores < 1 || p.CpuCores > effectiveMax)

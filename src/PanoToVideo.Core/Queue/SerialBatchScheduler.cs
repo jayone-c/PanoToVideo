@@ -156,7 +156,7 @@ public class SerialBatchScheduler
 
             if (result.Success)
             {
-                item.SetOutput(result.OutputPath!, result.Log!.AverageFps);
+                item.SetOutput(result.OutputPath!, result.Log!.AverageFps, result.Log.EncoderName, result.Log.UsedCpuFallback);
                 item.TransitionTo(TaskStatus.Completed);
             }
             else

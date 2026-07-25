@@ -28,17 +28,20 @@ public sealed class FfmpegNvencExecutor : IExportExecutor
     private readonly uint _bitrate;
     // P0-3：HEVC 可用性（由 RenderFallbackDecisionProbe 探测后注入），决定 hevc_nvenc vs h264_nvenc
     private readonly bool _hevcAvailable;
+    private readonly HardwareEncoderKind _hardwareEncoder;
     private DeviceEntry? _device;
     // 静态缓存：批量任务复用设备探测结果，避免每项重新探测（0.4s/项）
     private static readonly CachedDeviceProbe s_cachedProbe = new();
 
-    public FfmpegNvencExecutor(byte[] erpRgba, int erpW, int erpH, RenderParameters parameters, ExportPreset preset, bool hevcAvailable = false)
+    public FfmpegNvencExecutor(byte[] erpRgba, int erpW, int erpH, RenderParameters parameters, ExportPreset preset,
+        bool hevcAvailable = false, HardwareEncoderKind hardwareEncoder = HardwareEncoderKind.Nvenc)
     {
         _erpRgba = erpRgba;
         _erpW = erpW;
         _erpH = erpH;
         _bitrate = (uint)ExportPrecheck.EstimateBitrate(preset, parameters.Width, parameters.Height, parameters.Fps);
         _hevcAvailable = hevcAvailable;
+        _hardwareEncoder = hardwareEncoder;
     }
 
     public ExportExecutionResult Execute(
@@ -57,8 +60,8 @@ public sealed class FfmpegNvencExecutor : IExportExecutor
 
             // P0-2/P0-3：命令委托 Core FfmpegCommandBuilder（hevcAvailable 决定 hevc_nvenc vs h264_nvenc）
             // 提前构造以便 catch 分支也能引用 CodecLabel 上报真实编码器。
-            var cmd = FfmpegCommandBuilder.BuildGpuNvenc(
-                tmpPath, parameters.Width, parameters.Height, parameters.Fps, _bitrate, preset, _hevcAvailable);
+            var cmd = FfmpegCommandBuilder.BuildGpuHardware(
+                tmpPath, parameters.Width, parameters.Height, parameters.Fps, _bitrate, preset, _hevcAvailable, _hardwareEncoder);
 
             // 2. 创建 D3D11 设备
             D3D11CreateDevice(_device.Adapter, DriverType.Unknown, DeviceCreationFlags.BgraSupport,
@@ -98,7 +101,7 @@ public sealed class FfmpegNvencExecutor : IExportExecutor
                             var err = errTask.IsCompleted ? errTask.Result : "";
                             throw new InvalidOperationException($"FFmpeg 提前退出（码 {ff.ExitCode}）: {err}");
                         }
-                        double yaw = YawSchedule.YawAt(i, totalFrames, parameters.RotationDegrees, parameters.Direction, parameters.StartYaw);
+                        double yaw = YawSchedule.YawAt(i, parameters);
 
                         var ps = Stopwatch.StartNew();
                         using var nv12 = pipeline.RenderFrameToNv12(srv, _erpW, _erpH,
@@ -151,7 +154,7 @@ public sealed class FfmpegNvencExecutor : IExportExecutor
             return new ExportExecutionResult(false, "已取消", sw.Elapsed, 0)
             {
                 ProjectionDevice = _device?.Candidate.Description ?? "GPU",
-                EncoderName = preset == ExportPreset.Size && _hevcAvailable ? "H.265 NVENC" : "H.264 NVENC",
+                EncoderName = $"H.{(preset == ExportPreset.Size && _hevcAvailable ? "265" : "264")} {FallbackDecider.HardwareEncoderLabel(_hardwareEncoder)}",
                 UsedCpuFallback = false,
             };
         }
@@ -161,7 +164,7 @@ public sealed class FfmpegNvencExecutor : IExportExecutor
             return new ExportExecutionResult(false, $"{ex.GetType().Name}: {ex.Message}", sw.Elapsed, 0)
             {
                 ProjectionDevice = _device?.Candidate.Description ?? "GPU",
-                EncoderName = preset == ExportPreset.Size && _hevcAvailable ? "H.265 NVENC" : "H.264 NVENC",
+                EncoderName = $"H.{(preset == ExportPreset.Size && _hevcAvailable ? "265" : "264")} {FallbackDecider.HardwareEncoderLabel(_hardwareEncoder)}",
                 UsedCpuFallback = false,
             };
         }

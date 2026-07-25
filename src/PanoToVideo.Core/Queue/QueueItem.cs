@@ -20,7 +20,7 @@ public sealed class QueueItem : INotifyPropertyChanged
     public TaskStatus Status
     {
         get => _status;
-        private set { _status = value; OnPropertyChanged(); OnPropertyChanged(nameof(StatusDisplay)); OnPropertyChanged(nameof(ProgressText)); }
+        private set { _status = value; OnPropertyChanged(); OnPropertyChanged(nameof(StatusDisplay)); OnPropertyChanged(nameof(ProgressText)); OnPropertyChanged(nameof(DetailText)); }
     }
 
     public QueueProgress Progress { get; } = new();
@@ -30,6 +30,10 @@ public sealed class QueueItem : INotifyPropertyChanged
     public string? OutputPath { get { return _outputPath; } private set { _outputPath = value; OnPropertyChanged(); } }
     private string? _errorMessage;
     public string? ErrorMessage { get { return _errorMessage; } private set { _errorMessage = value; OnPropertyChanged(); } }
+    private bool _usedCpuFallback;
+    public bool UsedCpuFallback { get => _usedCpuFallback; private set { _usedCpuFallback = value; OnPropertyChanged(); } }
+    private string? _encoderName;
+    public string? EncoderName { get => _encoderName; private set { _encoderName = value; OnPropertyChanged(); } }
     public byte[]? Thumbnail { get; private set; }
 
     /// <summary>UI 绑定用进度文本。</summary>
@@ -50,9 +54,27 @@ public sealed class QueueItem : INotifyPropertyChanged
         TaskStatus.Completed => $"完成 {AverageFps:F0}fps",
         TaskStatus.Failed => "失败",
         TaskStatus.Cancelled => "已取消",
-        TaskStatus.Processing => Progress.TotalFrames > 0 ? $"{Progress.FramesDone}/{Progress.TotalFrames}" : "处理中",
+        TaskStatus.Processing => Progress.TotalFrames > 0
+            ? $"{Progress.FramesDone}/{Progress.TotalFrames} · {CurrentFps:F0}fps"
+            : "处理中",
         _ => "—",
     };
+
+    /// <summary>队列详情：导出时显示已耗时和预计剩余，完成后显示实际输出路径。</summary>
+    public string DetailText => Status switch
+    {
+        TaskStatus.Processing => $"已用 {FormatTime(Progress.Elapsed)} · 预计 {FormatTime(Progress.Eta)}",
+        TaskStatus.Completed when !string.IsNullOrWhiteSpace(OutputPath) => $"{(UsedCpuFallback ? "CPU 回退 · " : "")}输出：{OutputPath}",
+        TaskStatus.Failed when !string.IsNullOrWhiteSpace(ErrorMessage) => ErrorMessage!,
+        _ => "",
+    };
+
+    private double CurrentFps => Progress.EncodingFps > 0
+        ? Math.Min(Progress.ProjectionFps, Progress.EncodingFps)
+        : Progress.ProjectionFps;
+
+    private static string FormatTime(TimeSpan? value) => value is null ? "计算中" : FormatTime(value.Value);
+    private static string FormatTime(TimeSpan value) => value.TotalHours >= 1 ? value.ToString(@"h\:mm\:ss") : value.ToString(@"m\:ss");
 
     public QueueItem(string sourceFileName, int width, int height)
     {
@@ -77,15 +99,24 @@ public sealed class QueueItem : INotifyPropertyChanged
     {
         Progress.Update(framesDone, totalFrames, projectionFps, encodingFps, elapsed);
         OnPropertyChanged(nameof(ProgressText));
+        OnPropertyChanged(nameof(DetailText));
     }
 
-    public void SetOutput(string outputPath, double averageFps)
+    public void SetOutput(string outputPath, double averageFps, string? encoderName = null, bool usedCpuFallback = false)
     {
         OutputPath = outputPath;
         AverageFps = averageFps;
+        EncoderName = encoderName;
+        UsedCpuFallback = usedCpuFallback;
+        OnPropertyChanged(nameof(ProgressText));
+        OnPropertyChanged(nameof(DetailText));
     }
 
-    public void SetError(string error) => ErrorMessage = error;
+    public void SetError(string error)
+    {
+        ErrorMessage = error;
+        OnPropertyChanged(nameof(DetailText));
+    }
 
     public event PropertyChangedEventHandler? PropertyChanged;
     private void OnPropertyChanged([CallerMemberName] string? name = null) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));

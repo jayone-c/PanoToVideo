@@ -74,7 +74,7 @@ public sealed class FfmpegCpuFallbackExecutor : IExportExecutor
                         throw new InvalidOperationException($"FFmpeg 提前退出（码 {ff.ExitCode}）: {err}");
                     }
 
-                    double yaw = YawSchedule.YawAt(i, totalFrames, parameters.RotationDegrees, parameters.Direction, parameters.StartYaw);
+                    double yaw = YawSchedule.YawAt(i, parameters);
 
                     var ps = Stopwatch.StartNew();
                     var frame = EquirectRenderer.RenderFrame(

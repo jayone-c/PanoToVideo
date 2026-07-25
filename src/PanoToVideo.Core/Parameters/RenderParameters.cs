@@ -15,7 +15,8 @@ public sealed record RenderParameters(
     RotationDirection Direction,
     bool AsteroidIntro,
     int CpuCores,
-    double StartYaw = 0.0)
+    double StartYaw = 0.0,
+    RotationTempo? RotationTempo = null)
 {
     /// <summary>总帧数 = 时长 × FPS。</summary>
     public int TotalFrames => DurationSeconds * Fps;

@@ -20,7 +20,8 @@ public sealed record FallbackDecision(
     string ProjectionDeviceLabel,
     string EncoderLabel,
     bool UsedCpuFallback,
-    string? Reason);
+    string? Reason,
+    HardwareEncoderKind? HardwareEncoder = null);
 
 /// <summary>
 /// 回退决策纯逻辑（开发规划 §7、PRD #5）。
@@ -37,7 +38,8 @@ public static class FallbackDecider
     /// </summary>
     public static FallbackDecision Decide(GpuAvailability gpu, ExportPreset resolvedPreset)
     {
-        if (!gpu.HasGpu || !gpu.HasH264Encoder)
+        var h264Encoder = gpu.H264HardwareEncoder ?? (gpu.HasH264Encoder ? HardwareEncoderKind.Nvenc : null);
+        if (!gpu.HasGpu || h264Encoder is null)
         {
             return new FallbackDecision(
                 ExportBackend.CpuFallback,
@@ -49,12 +51,21 @@ public static class FallbackDecider
 
         // PresetResolver 已确保 Size 预设仅在内含 HEVC 可用时保留
         bool useHevc = resolvedPreset == ExportPreset.Size;
-        string encoderLabel = useHevc ? "H.265 NVENC" : "H.264 NVENC";
+        var hardwareEncoder = useHevc ? gpu.HevcHardwareEncoder ?? h264Encoder : h264Encoder;
+        string encoderLabel = $"H.{(useHevc ? "265" : "264")} {HardwareEncoderLabel(hardwareEncoder.Value)}";
         return new FallbackDecision(
             ExportBackend.GpuNvenc,
             ProjectionDeviceLabel: gpu.PreferredDeviceDescription ?? "GPU",
             EncoderLabel: encoderLabel,
             UsedCpuFallback: false,
-            Reason: null);
+            Reason: null,
+            HardwareEncoder: hardwareEncoder);
     }
+
+    public static string HardwareEncoderLabel(HardwareEncoderKind kind) => kind switch
+    {
+        HardwareEncoderKind.Amf => "AMF",
+        HardwareEncoderKind.Qsv => "QSV",
+        _ => "NVENC",
+    };
 }

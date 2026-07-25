@@ -83,7 +83,7 @@ public sealed class GpuExportExecutor : IExportExecutor
                 {
                     cancellationToken.ThrowIfCancellationRequested();
 
-                    double yaw = YawSchedule.YawAt(i, totalFrames, parameters.RotationDegrees, parameters.Direction, parameters.StartYaw);
+                    double yaw = YawSchedule.YawAt(i, parameters);
 
                     var ps = System.Diagnostics.Stopwatch.StartNew();
                     var nv12 = pipeline.RenderFrameToNv12(srv, _erpW, _erpH,
